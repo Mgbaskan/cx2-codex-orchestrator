@@ -15,6 +15,7 @@ CX2 does **not** replace Codex and does not introduce another AI model for orche
 ---
 
 > [!NOTE]
+>
 > ### Disclaimer & Trademark Notice
 >
 > CX2 is an independent, unofficial community project.
@@ -101,11 +102,11 @@ CX2 attempts to automate those decisions while keeping the behavior deterministi
 
 CX2 classifies tasks into three primary tiers:
 
-| Tier | Typical use | Reasoning | Typical sandbox |
-|---|---|---|---|
-| `routine` | inspection, explanation, simple UI work | `low` | `read-only` or task-dependent |
-| `standard` | bug fixes, features, refactors | `medium` | task-dependent |
-| `deep` | architecture, concurrency, security, complex root cause analysis | `high` | task-dependent |
+| Tier       | Typical use                                                      | Reasoning | Typical sandbox               |
+| ---------- | ---------------------------------------------------------------- | --------- | ----------------------------- |
+| `routine`  | inspection, explanation, simple UI work                          | `low`     | `read-only` or task-dependent |
+| `standard` | bug fixes, features, refactors                                   | `medium`  | task-dependent                |
+| `deep`     | architecture, concurrency, security, complex root cause analysis | `high`    | task-dependent                |
 
 Routing does **not** require an extra model call.
 
@@ -552,7 +553,10 @@ The installer will:
 7. Add `~/.cx/bin` to the user's `PATH` if required.
 8. Run `cx --doctor`.
 
-The installer does not intentionally overwrite an existing CX installation without protection.
+If an existing CX installation is detected, the installer updates CX-managed
+source/runtime files while preserving user-managed state such as the existing
+policy configuration and local runtime data. Back up custom modifications
+before upgrading.
 
 ---
 
@@ -594,36 +598,36 @@ cx "Fix the validation bug and run the relevant tests"
 
 ## Basic
 
-| Command | Description |
-|---|---|
-| `/help` | Show interactive help |
+| Command  | Description           |
+| -------- | --------------------- |
+| `/help`  | Show interactive help |
 | `/clear` | Clear terminal output |
-| `/exit` | Exit CX2 |
+| `/exit`  | Exit CX2              |
 
 ## Session
 
-| Command | Description |
-|---|---|
-| `/new` | Start a fresh session binding |
-| `/session` | Display current session state |
-| `/quota` | Display live quota state |
-| `/stats` | Display usage statistics |
-| `/route <task>` | Preview routing decision |
-| `/doctor` | Run runtime diagnostics |
+| Command         | Description                   |
+| --------------- | ----------------------------- |
+| `/new`          | Start a fresh session binding |
+| `/session`      | Display current session state |
+| `/quota`        | Display live quota state      |
+| `/stats`        | Display usage statistics      |
+| `/route <task>` | Preview routing decision      |
+| `/doctor`       | Run runtime diagnostics       |
 
 ## History and Threads
 
-| Command | Description |
-|---|---|
-| `/history [filter]` | List native Codex threads |
-| `/search <query>` | Search thread history |
-| `/thread [id\|no]` | Show thread details |
-| `/turns [id\|no]` | Show thread turns |
-| `/resume <id\|no>` | Resume a thread |
-| `/rename <id\|no> <name>` | Rename a thread |
-| `/archive <id\|no>` | Archive a thread |
-| `/unarchive <id\|no>` | Restore an archived thread |
-| `/delete <id\|no>` | Permanently delete a native thread when supported |
+| Command                   | Description                                       |
+| ------------------------- | ------------------------------------------------- |
+| `/history [filter]`       | List native Codex threads                         |
+| `/search <query>`         | Search thread history                             |
+| `/thread [id\|no]`        | Show thread details                               |
+| `/turns [id\|no]`         | Show thread turns                                 |
+| `/resume <id\|no>`        | Resume a thread                                   |
+| `/rename <id\|no> <name>` | Rename a thread                                   |
+| `/archive <id\|no>`       | Archive a thread                                  |
+| `/unarchive <id\|no>`     | Restore an archived thread                        |
+| `/delete <id\|no>`        | Permanently delete a native thread when supported |
 
 Numeric selectors come from the latest visible `/history` or `/search` result.
 

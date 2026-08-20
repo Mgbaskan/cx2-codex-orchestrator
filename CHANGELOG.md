@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Centralized Codex Compatibility Abstraction**: Consolidated Codex version parsing, capability resolution, and safe-degradation logic into `runtime/cx2/codex_compat.py`.
+- **Safe Native Delete Guard**: Centralized SQLite state schema inspection with PRAGMA query_only protection and automatic fallback recommendation to `/archive`.
 - **Deterministic Risk Engine v2**: Upgraded routing from prompt-keyword matching to a multi-signal risk engine evaluating lexical complexity, repository characteristics, task scope, sensitive surfaces, and mutation risk without model inference.
 - **Critical Concurrency Dominance**: Ensured concurrency bugs, deadlocks, and consistency issues reliably classify into deep reasoning.
 - **Sensitive Surface Mutation Protection**: Added bounded risk escalation for mutations targeting auth/tokens, database migrations, infrastructure/deployments, and secrets.

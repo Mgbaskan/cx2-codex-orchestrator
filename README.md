@@ -510,19 +510,14 @@ The project may operate on compatible Python 3.x versions, but the GitHub CI bas
 
 ---
 
-## Codex Runtime
+## Codex Runtime & Compatibility
 
-CX2 v2.0.5 uses a pinned compatible Codex runtime dependency through its dedicated virtual environment.
+CX2 uses a centralized compatibility layer (`runtime/cx2/codex_compat.py`) to manage interactions with the OpenAI Codex CLI and App Server runtime.
 
-Current compatibility baseline:
-
-```text
-openai-codex 0.144.4
-```
-
-CX2 does not vendor the Codex executable in the repository.
-
-Authentication continues to use the user's local Codex environment.
+- **Validated Baseline**: `openai-codex 0.144.4` / `openai-codex-cli-bin 0.144.4`.
+- **Capability-Oriented**: Distinguishes core App Server operations from optional capabilities.
+- **Safe Degradation**: Unverified newer versions or modified state schemas (e.g. SQLite schema v42+) degrade optional features like `/delete` cleanly to fail-closed without breaking the core runtime or modifying the database. `/archive` is available as a non-destructive alternative.
+- **Non-Vendored**: CX2 uses the local virtual environment or detected Codex executable; authentication uses the local Codex environment.
 
 ---
 

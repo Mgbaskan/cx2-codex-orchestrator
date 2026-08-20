@@ -2425,6 +2425,21 @@ def doctor() -> int:
         if shim_names
         else "NONE",
     )
+
+    try:
+        sys_path_runtime = str(Path(__file__).resolve().parent.parent / "runtime" / "cx2")
+        if sys_path_runtime not in sys.path:
+            sys.path.insert(0, sys_path_runtime)
+        from codex_compat import generate_doctor_compatibility_summary
+        compat_summary = generate_doctor_compatibility_summary()
+        print(f"Codex package  : {compat_summary['codex_package']}")
+        print(f"Codex CLI      : {compat_summary['codex_cli_version']}")
+        print(f"Validated base : {compat_summary['validated_baseline']}")
+        print(f"Core compat    : {compat_summary['core_compatibility']}")
+        print(f"Native delete  : {compat_summary['native_delete']}")
+    except Exception:
+        pass
+
     print()
 
     with create_codex() as codex:

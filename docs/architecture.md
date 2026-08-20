@@ -31,3 +31,9 @@ CX2 is structured into decoupled supervisory and presentation components.
 6. **Verification Gate (`runtime/cx2/verification_gate.py`)**:
    - Post-mutation file classification and test command evaluation.
    - Masked command detection (`cmd || true`, `cmd ; exit 0`).
+
+7. **Codex Compatibility Layer (`runtime/cx2/codex_compat.py`)**:
+   - Centralized semantic version parsing and capability evaluation for Codex CLI and App Server.
+   - Validated baseline pinning (`0.144.4`) with non-fatal degradation for unverified newer runtimes.
+   - Fail-closed native delete protection against modified SQLite state schemas without mutating user state.
+   - Structured diagnostic summaries for `/doctor`.

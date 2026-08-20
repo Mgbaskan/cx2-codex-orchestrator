@@ -31,6 +31,11 @@ from client import (
     CODEX_EXE,
 )
 
+from codex_compat import (
+    assess_codex_compatibility,
+    CompatibilityState,
+)
+
 from budget_adapter import (
     build_execution_plan,
     read_live_quota,
@@ -525,6 +530,13 @@ class CX2Runtime:
             return
 
         if not self.started:
+
+            compat = assess_codex_compatibility(self.client.codex_exe)
+            if compat.is_fatal or compat.core_state == CompatibilityState.INCOMPATIBLE:
+                err_msg = "; ".join(compat.issues) if compat.issues else "incompatible core contract"
+                raise CX2RuntimeError(
+                    f"Codex compatibility check failed: {err_msg}"
+                )
 
             self.client.start()
 

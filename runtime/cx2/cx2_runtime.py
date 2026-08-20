@@ -66,7 +66,7 @@ from verification_gate import (
 
 
 EXPECTED_ROUTER_VERSION = "1.2.0"
-RUNTIME_VERSION = "2.0.5"
+RUNTIME_VERSION = "2.0.6"
 
 
 class CX2RuntimeError(

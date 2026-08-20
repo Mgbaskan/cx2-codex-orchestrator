@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
-[![Release](https://img.shields.io/badge/release-v2.0.5-green.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/releases/tag/v2.0.5)
+[![Release](https://img.shields.io/badge/release-v2.0.6-green.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/releases/tag/v2.0.6)
 [![Tests](https://github.com/Mgbaskan/cx2-codex-orchestrator/actions/workflows/test.yml/badge.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/actions/workflows/test.yml)
 
 **CX2** is a Windows-first, policy-driven orchestration and terminal UX layer for OpenAI Codex.
@@ -138,7 +138,7 @@ but it also means classification is not equivalent to full semantic understandin
 
 CX2 can map routing tiers to available Codex models.
 
-The current v2.0.5 policy may use models such as:
+The current v2.0.6 policy may use models such as:
 
 ```text
 routine  -> gpt-5.6-luna
@@ -737,7 +737,7 @@ No specific optimization or token-saving percentage is guaranteed.
 
 # Known Limitations
 
-CX2 v2.0.5 currently has several known limitations.
+CX2 v2.0.6 currently has several known limitations.
 
 ### Windows-first
 
@@ -792,7 +792,7 @@ Future versions may incorporate additional deterministic repository signals with
 Current stable release:
 
 ```text
-CX2 2.0.5
+CX2 2.0.6
 ```
 
 Status:

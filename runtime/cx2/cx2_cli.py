@@ -69,7 +69,7 @@ from session_adapter import (
 )
 
 
-CLI_VERSION = "2.0.5"
+CLI_VERSION = "2.0.6"
 
 
 class CX2CLIError(
@@ -528,7 +528,7 @@ def print_session_db(
 
 def print_interactive_help() -> None:
 
-    print("=== CX 2.0.5 KOMUTLARI ===")
+    print(f"=== CX {CLI_VERSION} KOMUTLARI ===")
     print()
     print("Temel")
     print("  /help                  Bu yardımı göster.")

@@ -7,13 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.6] - 2026-08-20
+
 ### Added
 - **Centralized Codex Compatibility Abstraction**: Consolidated Codex version parsing, capability resolution, and safe-degradation logic into `runtime/cx2/codex_compat.py`.
-- **Safe Native Delete Guard**: Centralized SQLite state schema inspection with PRAGMA query_only protection and automatic fallback recommendation to `/archive`.
-- **Deterministic Risk Engine v2**: Upgraded routing from prompt-keyword matching to a multi-signal risk engine evaluating lexical complexity, repository characteristics, task scope, sensitive surfaces, and mutation risk without model inference.
-- **Critical Concurrency Dominance**: Ensured concurrency bugs, deadlocks, and consistency issues reliably classify into deep reasoning.
+- **Validated Codex Baseline**: Established pinned `0.144.4` baseline (`openai-codex==0.144.4` and `openai-codex-cli-bin==0.144.4`) with strict `PACKAGE_VERSION_MISMATCH` detection and graceful `UNVERIFIED` state for newer runtime versions.
+- **Safe Native Delete Guard**: Centralized SQLite state schema inspection with `PRAGMA query_only` protection and automatic fallback recommendation to `/archive` on migrated schemas (v42+).
+- **Deterministic Risk Engine v2**: Upgraded routing (`ROUTER_VERSION = "1.2.0"`) from prompt-keyword matching to a multi-signal risk engine evaluating lexical complexity, repository characteristics, task scope, sensitive surfaces, and mutation risk without model inference.
+- **Critical Concurrency Dominance**: Ensured concurrency bugs, data races, deadlocks, and consistency issues reliably classify into deep reasoning.
 - **Sensitive Surface Mutation Protection**: Added bounded risk escalation for mutations targeting auth/tokens, database migrations, infrastructure/deployments, and secrets.
-- **Rollback-Safe Installer Hardening**: Transactional installation and upgrade lifecycle with preflight validation, automatic rollback on failure, and Python >= 3.10 enforcement.
+- **Rollback-Safe Installer Hardening**: Transactional installation and upgrade lifecycle with preflight validation, automatic rollback on failure, Python >= 3.10 enforcement, and `-NoPathUpdate` parameter support.
+- **Hermetic Repository Test Isolation**: Isolated development tests from frozen production runtimes via custom meta-path finder.
+- **Accurate Transport Protocol Framing**: Documented and verified newline-delimited JSON (JSONL) request/response transport over stdio with JSON-RPC-like correlation semantics without requiring a strict literal `"jsonrpc": "2.0"` field.
 
 ## [2.0.5] - 2026-08-20
 

@@ -1,0 +1,115 @@
+{
+  "version": 1,
+  "models": {
+    "routine": [
+      "gpt-5.6-luna",
+      "gpt-5.6-terra",
+      "gpt-5.6-sol"
+    ],
+    "standard": [
+      "gpt-5.6-terra",
+      "gpt-5.6-sol",
+      "gpt-5.6-luna"
+    ],
+    "deep": [
+      "gpt-5.6-sol",
+      "gpt-5.6-terra",
+      "gpt-5.6-luna"
+    ]
+  },
+  "reasoning": {
+    "routine": "low",
+    "standard": "medium",
+    "deep": "high"
+  },
+  "thresholds": {
+    "routine_max": 1,
+    "deep_min": 7
+  },
+  "escalation": {
+    "enabled": true,
+    "chains": {
+      "routine": [
+        "routine",
+        "standard",
+        "deep"
+      ],
+      "standard": [
+        "standard",
+        "deep"
+      ],
+      "deep": [
+        "deep"
+      ]
+    },
+    "max_attempts": 3,
+    "escalate_missing_final": true,
+    "escalate_failed_turn": true,
+    "escalate_explicit_unresolved": true
+  },
+  "budget": {
+    "enabled": true,
+    "thresholds": {
+      "conserve_at": 70,
+      "critical_at": 85,
+      "emergency_at": 95,
+      "hard_stop_at": 100
+    },
+    "chains": {
+      "normal": {
+        "routine": ["routine", "standard", "deep"],
+        "standard": ["standard", "deep"],
+        "deep": ["deep"]
+      },
+      "conserve": {
+        "routine": ["routine", "standard"],
+        "standard": ["standard", "deep"],
+        "deep": ["deep"]
+      },
+      "critical": {
+        "routine": ["routine"],
+        "standard": ["standard"],
+        "deep": ["deep"]
+      },
+      "emergency": {
+        "routine": ["routine"],
+        "standard": ["standard"],
+        "deep": ["deep"]
+      }
+    }
+  },
+  "session": {
+    "enabled": true,
+    "resume_ttl_minutes": 45,
+    "resume_across_branch_change": false,
+    "context_warn_percent": 75,
+    "compaction": "native"
+  },
+  "cce": {
+    "enabled": false,
+    "deep_always": true,
+    "auto_index": false,
+    "index_timeout_sec": 600,
+    "startup_timeout_sec": 20,
+    "tool_timeout_sec": 60,
+    "enabled_tools": [
+      "context_search",
+      "expand_chunk",
+      "related_context",
+      "index_status"
+    ],
+    "standard_patterns": [
+      "\\broot cause\\b",
+      "\\barchitecture\\b",
+      "\\bsecurity\\b",
+      "\\bauth(?:entication|orization)?\\b",
+      "\\brace condition\\b",
+      "\\bdeadlock\\b",
+      "\\bdata consistency\\b",
+      "\\bmigration\\b",
+      "\\bschema\\b",
+      "\\bdependency\\b",
+      "\\bimpact analysis\\b"
+    ]
+  }
+}

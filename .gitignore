@@ -1,0 +1,43 @@
+# Python & Virtual Environments
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+runtime/venv/
+
+# CX2 Runtime & State
+data/
+logs/
+backups/
+*.log
+*.sqlite
+*.sqlite3
+*.db
+
+# Security & Credentials
+auth.json
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+*.p12
+
+# Generated Schema / Protocol dumps
+runtime/cx2/protocol-json/
+runtime/cx2/protocol-ts/
+
+# Binary Executables (Built or Downloaded)
+bin/*.exe
+bin/*.cmd
+
+# IDE & Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Windows System Files
+Thumbs.db
+Desktop.ini

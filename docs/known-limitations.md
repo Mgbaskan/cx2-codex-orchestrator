@@ -6,3 +6,4 @@
 4. **Repository Move / Rename**: Moving or renaming a repository directory initiates a new session binding.
 5. **CCE Acceleration**: Code Context Engine integration is experimental and disabled by default (`cce.enabled: false`).
 6. **Active Process Lock During Upgrades**: Upgrading CX2 while a CX session is actively running will fail safely because `runtime\venv` is locked by Windows; running CX instances must be closed before upgrading.
+7. **Deterministic Routing Heuristics**: Routing is rule-based, fast, and model-free. While Risk Engine v2 accounts for lexical, scope, sensitive surface, and repository signals, heuristic classification is not equivalent to full semantic LLM understanding.

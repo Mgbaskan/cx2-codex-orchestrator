@@ -112,14 +112,13 @@ Routing does **not** require an extra model call.
 
 CX2 evaluates deterministic signals such as:
 
-- prompt patterns
-- task keywords
+- lexical complexity (concurrency, architecture, root cause)
+- task scope (monorepo-wide, cross-service, or single-file)
+- sensitive surface mutation risk (auth/tokens, migrations, infrastructure, secrets)
+- repository characteristics (monorepo structure, tracked file counts, dirty working-tree state)
 - prompt size
-- repository characteristics
-- monorepo detection
-- dirty working-tree state
-- explicit write intent
-- explicit read-only / no-modification instructions
+- explicit write intent vs. explicit read-only / no-modification instructions
+- routine styling and documentation reductions
 
 The routing engine is intentionally heuristic and deterministic rather than LLM-based.
 

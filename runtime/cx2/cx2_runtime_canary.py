@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from pathlib import Path
@@ -96,18 +96,18 @@ def main() -> int:
 
     if (
         production_cx.ROUTER_VERSION
-        != "1.1.3"
+        != "1.2.0"
     ):
         raise RuntimeError(
-            "Production router 1.1.3 degil."
+            "Production router 1.2.0 degil."
         )
 
     if (
         EXPECTED_ROUTER_VERSION
-        != "1.1.3"
+        != "1.2.0"
     ):
         raise RuntimeError(
-            "Runtime guard 1.1.3 degil."
+            "Runtime guard 1.2.0 degil."
         )
 
     print(

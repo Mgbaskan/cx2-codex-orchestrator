@@ -101,7 +101,7 @@ SHIM_DIR = CX_HOME / "shims"
 SHIM_CONFIG_FILE = CX_HOME / "data" / "rtk-shims.json"
 QUOTA_FILE = CX_HOME / "data" / "quota-current.json"
 
-ROUTER_VERSION = "1.1.3"
+ROUTER_VERSION = "1.2.0"
 
 
 CX_CONFIG_OVERRIDES = (
@@ -698,101 +698,90 @@ def detect_repo(cwd: Path) -> dict[str, Any]:
         if status:
             repo["dirty_files"] = len(status.splitlines())
 
+        ls_files = run_local(
+            ["git", "ls-files"],
+            root,
+            timeout=2.0,
+        )
+
+        if ls_files:
+            tracked_count = len(ls_files.splitlines())
+            repo["tracked_files"] = tracked_count
+            if tracked_count >= 2000:
+                repo["tracked_files_bucket"] = "large"
+            elif tracked_count >= 200:
+                repo["tracked_files_bucket"] = "medium"
+            else:
+                repo["tracked_files_bucket"] = "small"
+        else:
+            repo["tracked_files"] = 0
+            repo["tracked_files_bucket"] = "small"
+
     return repo
 
 
-DEEP_RULES: list[tuple[str, int]] = [
-    (
-        r"\brace condition\b|"
-        r"\byaris durumu\b|"
-        r"\brace\b",
-        4,
-    ),
-    (
-        r"\bconcurrenc\w*|"
-        r"\bdeadlock\b|"
-        r"\block contention\b",
-        4,
-    ),
-    (
-        r"\barchitecture\w*|"
-        r"\bmimari\w*|"
-        r"\bsystem design\b",
-        3,
-    ),
-    (
-        r"\bsecurity\w*|"
-        r"\bguvenlik\w*|"
-        r"\bvulnerab\w*|"
-        r"\bacik\w*",
-        3,
-    ),
-    (
-        r"\bauth\b|"
-        r"\bauthentication\w*|"
-        r"\bauthorization\w*|"
-        r"\brbac\b|"
-        r"\bjwt\b|"
-        r"\byetki\w*",
-        2,
-    ),
-    (
-        r"\bmigration\w*|"
-        r"\bmigrasyon\w*|"
-        r"\bschema\w*",
-        2,
-    ),
-    (
-        r"\bproduction\b|"
-        r"\bprod\b|"
-        r"\bcanli ortam\b",
-        2,
-    ),
-    (
-        r"\bdeployment\w*|"
-        r"\bdeploy\w*|"
-        r"\bci/?cd\b|"
-        r"\bkubernetes\b",
-        2,
-    ),
-    (
-        r"\bmicroservice\w*|"
-        r"\bmulti[- ]service\b|"
-        r"\bdistributed\b",
-        3,
-    ),
-    (
-        r"\broot cause\b|"
-        r"\bkok neden\w*|"
-        r"\bnedenini bul\b",
-        2,
-    ),
-    (
-        r"\blarge refactor\b|"
-        r"\bbuyuk refactor\b|"
-        r"\bmajor refactor\b",
-        3,
-    ),
-    (
-        r"\bwhole (repo|repository|project)\b|"
-        r"\btum proje\w*|"
-        r"\bbutun proje\w*|"
-        r"\bkomple proje\w*",
-        3,
-    ),
-    (
-        r"\bdata consistency\b|"
-        r"\bveri tutarl\w*",
-        2,
-    ),
-    (
-        r"\btransaction\w*|"
-        r"\brollback\b",
-        2,
-    ),
+# ==============================================================================
+# RISK ENGINE V2: DETERMINISTIC RULE & SIGNAL DEFINITIONS
+# ==============================================================================
+
+# Critical Concurrency / Deadlock / Thread Safety (Weight: +4, Dominance >= deep_min)
+CRITICAL_CONCURRENCY_RULES: list[str] = [
+    r"\brace condition\b|\bdata race\b|\bthread race\b|\byaris durum\w*",
+    r"\bconcurren\w*|\bdeadlock\b|\block contention\b|\bthread safety\b|\bthread[- ]safe\b|\beszamanli\w*|\bkilitlen\w*",
+    r"\bdistributed transaction\w*|\bdata consistency\b|\bveri tutarl\w*",
 ]
 
+# Structural / Architecture / Major Refactor (Weight: +3)
+STRUCTURAL_RULES: list[str] = [
+    r"\barchitecture\w*|\bmimari\w*|\bsystem design\b",
+    r"\blarge refactor\b|\bbuyuk refactor\b|\bmajor refactor\b|\bmonorepo[- ]wide refactor\b",
+    r"\bdistributed system\w*|\bdistributed architecture\b",
+]
 
+# Analysis & Flow Inspection (Weight: +2)
+ANALYSIS_RULES: list[str] = [
+    r"\b(?:explain|trace|clarify|acikla|incele|analiz)\w*\s+.*\b(?:flow|architecture|pipeline|lifecycle|akisi|mimarisi)\b",
+    r"\b(?:security\s+review|security\s+audit|guvenlik\s+incelemesi|guvenlik\s+denetimi)\b",
+    r"\b(?:review|inspect|audit|incele|denetle)\w*\s+.*\b(?:module|service|system|architecture|security|auth|modulu|servisi|sistemi)\b",
+    r"\b(?:guvenlik|kimlik\s+dogrulama|auth|security|mimari|sistem|modul\w*|servis\w*)\s+.*\b(?:incele\w*|denetle\w*|analiz\s+et\w*|acikla\w*)\b",
+    r"\b(?:authentication\s+flow|auth\s+flow|kimlik\s+dogrulama\s+akisi|oauth\s+flow|token\s+flow)\b",
+    r"\b(?:analyze|analyse|analiz\s+et)\w*\b",
+]
+
+# Root Cause / Deep Diagnostics (Weight: +2)
+ROOT_CAUSE_RULES: list[str] = [
+    r"\broot cause\b|\bkok neden\w*|\bnedenini bul\b",
+]
+
+# Domain Context Keywords (Weight: +1 each, bounded to max +3 total)
+DOMAIN_RULES: list[tuple[str, str]] = [
+    (r"\bauth\b|\bauthentication\w*|\bauthorization\w*|\brbac\b|\bjwt\b|\byetki\w*|\boauth\b|\btoken\b|\bsession\b|\bkimlik dogrulama\w*", "auth"),
+    (r"\bsecurity\w*|\bguvenlik\w*|\bvulnerab\w*|\bacik\w*|\bcrypto\w*|\bsecret\w*|\bgizli anahtar\w*", "security"),
+    (r"\bmigration\w*|\bmigrasyon\w*|\bschema\w*|\bdatabase\b|\bveritabani\w*|\bsql\b|\bprisma\b", "db-schema"),
+    (r"\bproduction\b|\bprod\b|\bcanli ortam\b|\bcanli dagitim\w*", "production"),
+    (r"\bdeployment\w*|\bdeploy\w*|\bci/?cd\b|\bkubernetes\b|\bk8s\b|\bdocker\w*", "deployment"),
+    (r"\bmicroservice\w*|\bmulti[- ]service\b|\bdistributed\b", "distributed"),
+    (r"\btransaction\w*|\brollback\b|\bgeri alma\b|\bislem yonetim\w*", "transaction"),
+]
+
+# High-Risk / Broad Task Scope (Weight: +3)
+BROAD_SCOPE_RULES: list[str] = [
+    r"\b(?:whole|entire|all)\s+(?:repo|repository|project|codebase)\b|\btum\s+(?:proje|repo|kod|servisler)\w*|\bbutun\s+(?:proje|repo|kod|servisler)\w*|\bkomple\s+(?:proje|repo)\w*",
+    r"\b(?:all|across\s+all)\s+(?:services|packages|modules|microservices)\b|\bcross[- ]service\b|\bsystem[- ]wide\b|\bmonorepo[- ]wide\b|\btum\s+servisler\s+genelinde\b",
+    r"\bfull[- ]stack\s+refactor\b|\bdatabase\s*\+\s*backend\s*\+\s*(?:deployment|frontend)\b",
+]
+
+# Sensitive Surface & Mutation Risk (Evaluated when mutating is True)
+SENSITIVE_MUTATION_RULES: list[tuple[str, int, str]] = [
+    (r"\b(?:refresh\s+token|token\s+rotation|token\s+refresh|session\s+handling|auth\s+logic|jwt\s+signing|password\s+hash|oauth\s+flow)\b|\btoken\s+yenileme\w*", 2, "auth-token-mutation"),
+    (r"\b(?:production\s+(?:database\s+)?migration|database\s+migration\s+.*rollback|migration\s+rollback|veritabani\s+migrasyon\w*\s+.*geri\s+alma|canli\s+ortam\s+veritabani\s+migrasyon\w*)\b", 5, "production-db-migration-mutation"),
+    (r"\b(?:database\s+migration|db\s+migration|schema\s+migration|alter\s+table)\b|\bveritabani\s+migrasyon\w*", 3, "db-migration-mutation"),
+    (r"\b(?:kubernetes\s+(?:production\s+)?deployment|production\s+deployment|deployment\s+config|ci/cd\s+workflow|canli\s+dagitim\w*)\b", 3, "infra-deployment-mutation"),
+    (r"\b(?:secret\s+handling|secret\s+rotation|credential\s+handling|credential\s+rotation|api\s+key\s+rotation|gizli\s+anahtar\w*)\b", 2, "secret-credential-mutation"),
+    (r"\b(?:upgrade\s+dependencies|rewrite\s+lockfile|package-lock\.json|pnpm-lock\.yaml|requirements\.txt)\b", 1, "dependency-lockfile-mutation"),
+]
+
+# Routine / Low-Risk Keywords (Reductions: -1 per hit, capped at -3)
 ROUTINE_RULES: list[str] = [
     r"\bcss\b",
     r"\btailwind\b",
@@ -806,6 +795,19 @@ ROUTINE_RULES: list[str] = [
     r"\blabel\b",
     r"\btext\b|\bmetin\w*",
     r"\bcomment\b|\byorum\w*",
+    r"\bformatting\b",
+    r"\breadme(?:\.md)?\b",
+    r"\bdocs?\b|\bdokuman\w*",
+]
+
+# Backward compatibility alias
+DEEP_RULES: list[tuple[str, int]] = [
+    (r"\brace condition\b|\bdata race\b|\bthread race\b|\byaris durum\w*", 4),
+    (r"\bconcurren\w*|\bdeadlock\b|\block contention\b|\bthread safety\b|\bthread[- ]safe\b|\beszamanli\w*|\bkilitlen\w*", 4),
+    (r"\barchitecture\w*|\bmimari\w*|\bsystem design\b", 3),
+    (r"\bdistributed transaction\w*|\bdata consistency\b|\bveri tutarl\w*", 4),
+    (r"\blarge refactor\b|\bbuyuk refactor\b|\bmajor refactor\b|\bmonorepo[- ]wide refactor\b", 3),
+    (r"\broot cause\b|\bkok neden\w*|\bnedenini bul\b", 2),
 ]
 
 
@@ -862,6 +864,7 @@ WRITE_RULES: list[str] = [
     r"\bconvert\b|\bdonustur\w*",
     r"\binstall\b|\bkur\b|\bkurulum\b",
     r"\bresolve\b|\bcoz\w*",
+    r"\brename\b|\byeniden\s+adlandir\w*",
 ]
 
 
@@ -919,6 +922,180 @@ def strip_negated_write_phrases(
     return result
 
 
+def extract_referenced_paths(text: str) -> list[str]:
+    """
+    Conservatively extract explicit file or directory path references from prompt text.
+    """
+    candidates = re.findall(
+        r"(?:[a-zA-Z0-9_.-]+[/\\])+[a-zA-Z0-9_.-]+\.[a-zA-Z0-9]+|\b[a-zA-Z0-9_.-]+\.(?:ts|tsx|js|jsx|py|go|rs|php|cs|java|cpp|c|h|md|json|yml|yaml|toml|sql|prisma|sh|ps1|html|css|scss)\b|\bDockerfile\b|\bContainerfile\b",
+        text,
+    )
+    return list(dict.fromkeys(candidates))
+
+
+def evaluate_lexical_signals(
+    text: str,
+) -> tuple[int, list[str], list[str], bool]:
+    """
+    Evaluate lexical complexity signals.
+    Returns (points, reasons, signal_tags, has_critical_concurrency).
+    """
+    points = 0
+    reasons: list[str] = []
+    tags: list[str] = []
+    has_critical = False
+
+    for pat in CRITICAL_CONCURRENCY_RULES:
+        if re.search(pat, text, re.IGNORECASE):
+            has_critical = True
+            tags.append(f"critical-concurrency:{pat[:25]}")
+            reasons.append("+4:critical-concurrency")
+            points += 4
+
+    for pat in STRUCTURAL_RULES:
+        if re.search(pat, text, re.IGNORECASE):
+            tags.append(f"structural:{pat[:25]}")
+            reasons.append("+3:structural")
+            points += 3
+
+    if re.search(r"\brefactor\w*", text, re.IGNORECASE) and not any("structural" in t for t in tags):
+        tags.append("refactor")
+        reasons.append("+2:refactor")
+        points += 2
+
+    for pat in ROOT_CAUSE_RULES:
+        if re.search(pat, text, re.IGNORECASE):
+            tags.append("root-cause")
+            reasons.append("+2:root-cause")
+            points += 2
+
+    for pat in ANALYSIS_RULES:
+        if re.search(pat, text, re.IGNORECASE):
+            tags.append("analysis-flow")
+            reasons.append("+2:analysis-flow")
+            points += 2
+            break
+
+    domain_hits = 0
+    for pat, label in DOMAIN_RULES:
+        if re.search(pat, text, re.IGNORECASE):
+            domain_hits += 1
+            tags.append(f"domain:{label}")
+
+    if domain_hits > 0:
+        domain_points = min(3, domain_hits)
+        reasons.append(f"+{domain_points}:domain-context")
+        points += domain_points
+
+    return points, reasons, tags, has_critical
+
+
+def evaluate_scope_signals(
+    text: str,
+) -> tuple[int, list[str], list[str]]:
+    """
+    Evaluate task scope signals.
+    Returns (points, reasons, signal_tags).
+    """
+    points = 0
+    reasons: list[str] = []
+    tags: list[str] = []
+
+    for pat in BROAD_SCOPE_RULES:
+        if re.search(pat, text, re.IGNORECASE):
+            tags.append(f"broad-scope:{pat[:25]}")
+            reasons.append("+3:broad-scope")
+            points += 3
+
+    return points, reasons, tags
+
+
+def evaluate_sensitive_mutation_signals(
+    text: str,
+    mutating: bool,
+) -> tuple[int, list[str], list[str]]:
+    """
+    Evaluate sensitive surface mutation risk (only when mutating is True).
+    Returns (points, reasons, signal_tags).
+    """
+    points = 0
+    reasons: list[str] = []
+    tags: list[str] = []
+
+    if not mutating:
+        return points, reasons, tags
+
+    matched_labels: set[str] = set()
+    for pat, weight, label in SENSITIVE_MUTATION_RULES:
+        if re.search(pat, text, re.IGNORECASE):
+            if label == "db-migration-mutation" and "production-db-migration-mutation" in matched_labels:
+                continue
+            matched_labels.add(label)
+            tags.append(label)
+            reasons.append(f"+{weight}:{label}")
+            points += weight
+
+    return points, reasons, tags
+
+
+def evaluate_repository_signals(
+    repo: dict[str, Any],
+) -> tuple[int, list[str], list[str]]:
+    """
+    Evaluate repository contextual risk.
+    Returns (points, reasons, signal_tags).
+    """
+    points = 0
+    reasons: list[str] = []
+    tags: list[str] = []
+
+    if repo.get("monorepo"):
+        tags.append("monorepo")
+        reasons.append("+1:monorepo")
+        points += 1
+
+    tracked_files = int(repo.get("tracked_files", 0))
+    bucket = repo.get("tracked_files_bucket")
+    if tracked_files >= 2000 or bucket == "large":
+        tags.append("large-repo")
+        reasons.append("+2:large-repo")
+        points += 2
+    elif tracked_files >= 200 or bucket == "medium":
+        tags.append("medium-repo")
+        reasons.append("+1:medium-repo")
+        points += 1
+
+    dirty_files = int(repo.get("dirty_files", 0))
+    if dirty_files >= 20:
+        tags.append("large-dirty-tree")
+        reasons.append("+1:large-dirty-tree")
+        points += 1
+
+    return points, reasons, tags
+
+
+def evaluate_routine_reductions(
+    text: str,
+) -> tuple[int, list[str], list[str]]:
+    """
+    Evaluate routine/low-risk task reductions.
+    Returns (reduction_points, reasons, signal_tags).
+    """
+    tags: list[str] = []
+    reasons: list[str] = []
+
+    routine_hits = sum(
+        1 for pat in ROUTINE_RULES
+        if re.search(pat, text, re.IGNORECASE)
+    )
+
+    reduction = 0
+    if routine_hits > 0:
+        reduction = min(3, routine_hits)
+        tags.append(f"routine-hits:{routine_hits}")
+        reasons.append(f"-{reduction}:routine")
+
+    return reduction, reasons, tags
 
 
 def classify(
@@ -926,77 +1103,108 @@ def classify(
     repo: dict[str, Any],
     policy: dict[str, Any],
 ) -> dict[str, Any]:
+    """
+    CX2 Deterministic Risk Engine v2 Classifier.
+
+    Evaluates prompt lexical complexity, task scope, sensitive surfaces,
+    mutation risk, and repository context without model inference.
+    """
     text = normalize(prompt)
-    score = 0
     reasons: list[str] = []
+    signals: dict[str, list[str]] = {
+        "lexical": [],
+        "repository": [],
+        "scope": [],
+        "mutation": [],
+        "sensitive": [],
+        "reductions": [],
+    }
+    score_breakdown: dict[str, int] = {
+        "lexical": 0,
+        "repository": 0,
+        "scope": 0,
+        "mutation": 0,
+        "sensitive": 0,
+        "reductions": 0,
+    }
 
-    for pattern, weight in DEEP_RULES:
-        if re.search(pattern, text, re.IGNORECASE):
-            score += weight
-            reasons.append(f"+{weight}:{pattern[:30]}")
+    # 1. Write intent / sandbox determination (strictly separated)
+    write_scan_text = strip_negated_write_phrases(text)
+    mutating = regex_any(write_scan_text, WRITE_RULES)
+    sandbox = "workspace-write" if mutating else "read-only"
+    if mutating:
+        signals["mutation"].append("workspace-write")
+    else:
+        signals["mutation"].append("read-only")
 
-    routine_hits = sum(
-        1 for pattern in ROUTINE_RULES
-        if re.search(pattern, text, re.IGNORECASE)
-    )
+    # 2. Lexical complexity signals
+    lex_points, lex_reasons, lex_tags, has_critical_concurrency = evaluate_lexical_signals(text)
+    score_breakdown["lexical"] += lex_points
+    reasons.extend(lex_reasons)
+    signals["lexical"].extend(lex_tags)
 
-    if routine_hits:
-        reduction = min(2, routine_hits)
-        score -= reduction
-        reasons.append(f"-{reduction}:routine")
+    # 3. Task Scope signals
+    scope_points, scope_reasons, scope_tags = evaluate_scope_signals(text)
+    score_breakdown["scope"] += scope_points
+    reasons.extend(scope_reasons)
+    signals["scope"].extend(scope_tags)
 
+    # 4. Sensitive Surface & Mutation Risk
+    sens_points, sens_reasons, sens_tags = evaluate_sensitive_mutation_signals(text, mutating)
+    score_breakdown["sensitive"] += sens_points
+    reasons.extend(sens_reasons)
+    signals["sensitive"].extend(sens_tags)
+
+    # 5. Repository signals
+    repo_points, repo_reasons, repo_tags = evaluate_repository_signals(repo)
+    score_breakdown["repository"] += repo_points
+    reasons.extend(repo_reasons)
+    signals["repository"].extend(repo_tags)
+
+    # 6. Prompt length signals
     if len(prompt) > 1500:
-        score += 1
         reasons.append("+1:long-prompt")
-
+        score_breakdown["lexical"] += 1
     if len(prompt) > 5000:
-        score += 1
         reasons.append("+1:very-long-prompt")
+        score_breakdown["lexical"] += 1
 
-    if repo.get("monorepo"):
-        score += 1
-        reasons.append("+1:monorepo")
+    # 7. Routine reductions
+    red_points, red_reasons, red_tags = evaluate_routine_reductions(text)
+    score_breakdown["reductions"] -= red_points
+    reasons.extend(red_reasons)
+    signals["reductions"].extend(red_tags)
 
-    dirty_files = int(repo.get("dirty_files", 0))
-
-    if dirty_files >= 20:
-        score += 1
-        reasons.append("+1:large-dirty-tree")
-
-    score = max(0, score)
+    raw_score = sum(score_breakdown.values())
+    final_score = max(0, raw_score)
 
     routine_max = int(policy["thresholds"]["routine_max"])
     deep_min = int(policy["thresholds"]["deep_min"])
 
-    if score <= routine_max:
+    # 8. Dominance & Capping rules
+    if has_critical_concurrency:
+        if final_score < deep_min:
+            final_score = deep_min
+            reasons.append("dominate-deep:critical-concurrency")
+
+    # 9. Tier resolution
+    if final_score <= routine_max:
         tier = "routine"
-    elif score >= deep_min:
+    elif final_score >= deep_min:
         tier = "deep"
     else:
         tier = "standard"
 
-    write_scan_text = strip_negated_write_phrases(
-        text
-    )
-
-    mutating = regex_any(
-        write_scan_text,
-        WRITE_RULES,
-    )
-
-    sandbox = (
-        "workspace-write"
-        if mutating
-        else "read-only"
-    )
-
     return {
-        "score": score,
+        "score": final_score,
         "tier": tier,
         "reasoning": policy["reasoning"][tier],
         "sandbox": sandbox,
         "mutating": mutating,
         "reasons": reasons,
+        "risk_signals": signals,
+        "score_breakdown": score_breakdown,
+        "router_version": ROUTER_VERSION,
     }
 
 

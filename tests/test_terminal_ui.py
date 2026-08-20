@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest.mock import PropertyMock, patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "runtime" / "cx2"))
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+import _bootstrap
 
 from terminal_ui import TerminalRenderer
 from verification_gate import VerificationAssessment, unwrap_display_command

@@ -3,7 +3,8 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "runtime" / "cx2"))
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+import _bootstrap
 
 from verification_gate import (
     classify_file,

@@ -5,7 +5,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(REPO_ROOT / "runtime" / "cx2"))
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+import _bootstrap
 
 import history_cli
 from history_cli import ACTIVE_SELECTION_CONTEXT

@@ -5,3 +5,4 @@
 3. **Non-Git Workspaces**: Thread session persistence is process-local in non-git directories.
 4. **Repository Move / Rename**: Moving or renaming a repository directory initiates a new session binding.
 5. **CCE Acceleration**: Code Context Engine integration is experimental and disabled by default (`cce.enabled: false`).
+6. **Active Process Lock During Upgrades**: Upgrading CX2 while a CX session is actively running will fail safely because `runtime\venv` is locked by Windows; running CX instances must be closed before upgrading.

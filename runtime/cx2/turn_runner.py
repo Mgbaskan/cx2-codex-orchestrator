@@ -2231,6 +2231,9 @@ class StreamingTurnRunner:
                 cats = classify_command(cmd_str)
                 masked = is_command_masked(cmd_str)
                 disp_cmd = unwrap_display_command(cmd_str)
+                raw_out = ""
+                if isinstance(completed_item, dict):
+                    raw_out = str(completed_item.get("output") or completed_item.get("error") or completed_item.get("stderr") or "")
                 result.command_executions.append({
                     "command": cmd_str,
                     "exit_code": exit_code,
@@ -2240,6 +2243,7 @@ class StreamingTurnRunner:
                     "is_masked": masked,
                     "display_command": disp_cmd,
                     "output_snippet": completed_summary.get("output_snippet", ""),
+                    "classification_text": raw_out,
                 })
 
             if (

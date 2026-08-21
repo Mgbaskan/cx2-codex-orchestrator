@@ -287,6 +287,61 @@ TIMEOUT_PATTERNS = [
     re.compile(r"timeout exceeded", re.IGNORECASE),
 ]
 
+CONCLUSIVE_TEST_FAILURE_PATTERNS = [
+    # Jest / Vitest / Mocha / Jasmine / Ava
+    re.compile(r"\bFAIL\b", re.IGNORECASE),
+    re.compile(r"\b\d+\s+failed\b", re.IGNORECASE),
+    re.compile(r"Tests:\s+.*\b\d+\s+failed\b", re.IGNORECASE),
+    re.compile(r"Test Suites:\s+.*\b\d+\s+failed\b", re.IGNORECASE),
+    re.compile(r"✕\s+", re.UNICODE),
+    re.compile(r"\b✖\s+", re.UNICODE),
+    # Pytest / Unittest / Python
+    re.compile(r"\bFAILED\b\s+\([^)]+\)", re.IGNORECASE),
+    re.compile(r"\bFAILED\b\s+[^\s]+::", re.IGNORECASE),
+    re.compile(r"\bFAILED\b\s*\(failures=\d+", re.IGNORECASE),
+    re.compile(r"\bFAILED\b\s*\(errors=\d+", re.IGNORECASE),
+    re.compile(r"\bAssertionError\b", re.IGNORECASE),
+    re.compile(r"\bassert\s+.*==", re.IGNORECASE),
+    # Go test
+    re.compile(r"^--- FAIL:", re.MULTILINE),
+    re.compile(r"\bFAIL\s+[a-zA-Z0-9_\-./]+", re.IGNORECASE),
+    re.compile(r"\bFAIL\b.*\[build failed\]", re.IGNORECASE),
+    # Cargo / Rust test
+    re.compile(r"test result: FAILED\.", re.IGNORECASE),
+    re.compile(r"---- [^\s]+ stdout ----", re.IGNORECASE),
+    # Dotnet / C# test
+    re.compile(r"Failed:\s+[1-9]\d*", re.IGNORECASE),
+    re.compile(r"Total tests:\s+.*Failed:\s+[1-9]\d*", re.IGNORECASE),
+    # Maven / Gradle / Java test
+    re.compile(r"Tests run:\s+\d+,\s+Failures:\s+[1-9]\d*", re.IGNORECASE),
+    re.compile(r"Tests run:\s+\d+,\s+Errors:\s+[1-9]\d*", re.IGNORECASE),
+    re.compile(r"BUILD FAILED", re.IGNORECASE),
+    # Generic test failure indicators
+    re.compile(r"\b\d+\s+(?:test|tests|spec|specs)\s+failed\b", re.IGNORECASE),
+    re.compile(r"npm ERR! Test failed", re.IGNORECASE),
+]
+
+CONCLUSIVE_TYPECHECK_FAILURE_PATTERNS = [
+    re.compile(r"error TS\d+:", re.IGNORECASE),
+    re.compile(r"Found \d+ errors? in", re.IGNORECASE),
+    re.compile(r": error: [^\n]+ \[[a-zA-Z0-9_-]+\]", re.IGNORECASE),
+    re.compile(r"\d+ errors?, \d+ warnings?", re.IGNORECASE),
+]
+
+CONCLUSIVE_LINT_FAILURE_PATTERNS = [
+    re.compile(r"\d+\s+problems?\s+\(\d+\s+errors?", re.IGNORECASE),
+    re.compile(r"eslint: error", re.IGNORECASE),
+    re.compile(r"\b[A-Z]\d{3,4}:[^\n]+", re.IGNORECASE),
+    re.compile(r"Found \d+ error\(s\)", re.IGNORECASE),
+]
+
+CONCLUSIVE_BUILD_FAILURE_PATTERNS = [
+    re.compile(r"error\[E\d+\]:", re.IGNORECASE),
+    re.compile(r"Build failed with \d+ errors?:", re.IGNORECASE),
+    re.compile(r"SyntaxError:", re.IGNORECASE),
+    re.compile(r"Compilation failed", re.IGNORECASE),
+]
+
 
 @dataclass
 class CommandExecutionSummary:
@@ -298,9 +353,12 @@ class CommandExecutionSummary:
     is_masked: bool = False
     output_snippet: str = ""
     display_command: str = ""
+    classification_text: str = ""
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        d.pop("classification_text", None)
+        return d
 
 
 @dataclass
@@ -316,7 +374,7 @@ class CommandOutcome:
                       # SANDBOX_DENIED | PERMISSION_DENIED | EXECUTABLE_NOT_FOUND |
                       # ENVIRONMENT_INIT_FAILED | TEMP_CACHE_UNAVAILABLE | TIMEOUT |
                       # UNSUPPORTED_CAPABILITY | WORKSPACE_WRITE_REQUIRED | MASKED_EXIT_CODE |
-                      # NO_EXIT_CODE | TURN_INTERRUPTED | NON_ZERO_EXIT
+                      # NO_EXIT_CODE | TURN_INTERRUPTED | INCONCLUSIVE_NON_ZERO_EXIT
     output_snippet: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -326,11 +384,12 @@ class CommandOutcome:
 def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome:
     """
     Deterministically classify the outcome of a single command execution.
-    Distinguishes true project test/build failures from environment/sandbox blocks.
+    Distinguishes true project test/build failures from environment/sandbox blocks and inconclusive runs.
     """
     disp = summary.display_command or unwrap_display_command(summary.command)
     primary_cat = summary.categories[0] if summary.categories else "OTHER"
-    snippet = summary.output_snippet or ""
+    snippet = summary.classification_text or summary.output_snippet or ""
+    disp_snippet = summary.output_snippet or snippet[:500]
 
     if summary.exit_code == 0:
         if summary.is_masked:
@@ -343,7 +402,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
                 sequence=summary.sequence,
                 outcome="INCONCLUSIVE",
                 reason_code="MASKED_EXIT_CODE",
-                output_snippet=snippet,
+                output_snippet=disp_snippet,
             )
         return CommandOutcome(
             command=summary.command,
@@ -354,7 +413,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             sequence=summary.sequence,
             outcome="PASSED",
             reason_code="EXIT_SUCCESS",
-            output_snippet=snippet,
+            output_snippet=disp_snippet,
         )
 
     if summary.exit_code is None:
@@ -368,7 +427,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
                 sequence=summary.sequence,
                 outcome="BLOCKED",
                 reason_code="TIMEOUT",
-                output_snippet=snippet,
+                output_snippet=disp_snippet,
             )
         return CommandOutcome(
             command=summary.command,
@@ -379,7 +438,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             sequence=summary.sequence,
             outcome="INCONCLUSIVE",
             reason_code="NO_EXIT_CODE",
-            output_snippet=snippet,
+            output_snippet=disp_snippet,
         )
 
     # Exit code != 0: Check deterministic blocked signatures first
@@ -393,7 +452,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             sequence=summary.sequence,
             outcome="BLOCKED",
             reason_code="ENVIRONMENT_INIT_FAILED",
-            output_snippet=snippet,
+            output_snippet=disp_snippet,
         )
 
     if any(p.search(snippet) for p in WORKSPACE_WRITE_PATTERNS):
@@ -406,7 +465,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             sequence=summary.sequence,
             outcome="BLOCKED",
             reason_code="WORKSPACE_WRITE_REQUIRED",
-            output_snippet=snippet,
+            output_snippet=disp_snippet,
         )
 
     if any(p.search(snippet) for p in EXECUTABLE_NOT_FOUND_PATTERNS):
@@ -419,7 +478,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             sequence=summary.sequence,
             outcome="BLOCKED",
             reason_code="EXECUTABLE_NOT_FOUND",
-            output_snippet=snippet,
+            output_snippet=disp_snippet,
         )
 
     if any(p.search(snippet) for p in SANDBOX_PERMISSION_PATTERNS):
@@ -432,7 +491,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             sequence=summary.sequence,
             outcome="BLOCKED",
             reason_code="SANDBOX_DENIED",
-            output_snippet=snippet,
+            output_snippet=disp_snippet,
         )
 
     if any(p.search(snippet) for p in TIMEOUT_PATTERNS):
@@ -445,21 +504,63 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             sequence=summary.sequence,
             outcome="BLOCKED",
             reason_code="TIMEOUT",
-            output_snippet=snippet,
+            output_snippet=disp_snippet,
         )
 
-    # Actual test / check failure in project code
-    if "TEST" in summary.categories:
-        reason_code = "TEST_FAILURE"
-    elif "TYPECHECK" in summary.categories:
-        reason_code = "TYPECHECK_FAILURE"
-    elif "LINT" in summary.categories:
-        reason_code = "LINT_FAILURE"
-    elif "BUILD" in summary.categories:
-        reason_code = "BUILD_FAILURE"
-    else:
-        reason_code = "NON_ZERO_EXIT"
+    # Check for conclusive positive project failure evidence
+    if any(p.search(snippet) for p in CONCLUSIVE_TEST_FAILURE_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category="TEST" if "TEST" in summary.categories else primary_cat,
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="FAILED",
+            reason_code="TEST_FAILURE",
+            output_snippet=disp_snippet,
+        )
 
+    if "TYPECHECK" in summary.categories and any(p.search(snippet) for p in CONCLUSIVE_TYPECHECK_FAILURE_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category="TYPECHECK",
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="FAILED",
+            reason_code="TYPECHECK_FAILURE",
+            output_snippet=disp_snippet,
+        )
+
+    if "LINT" in summary.categories and any(p.search(snippet) for p in CONCLUSIVE_LINT_FAILURE_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category="LINT",
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="FAILED",
+            reason_code="LINT_FAILURE",
+            output_snippet=disp_snippet,
+        )
+
+    if "BUILD" in summary.categories and any(p.search(snippet) for p in CONCLUSIVE_BUILD_FAILURE_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category="BUILD",
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="FAILED",
+            reason_code="BUILD_FAILURE",
+            output_snippet=disp_snippet,
+        )
+
+    # Inconclusive non-zero exit: not enough evidence to prove test failure or environment block
     return CommandOutcome(
         command=summary.command,
         display_command=disp,
@@ -467,9 +568,9 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
         exit_code=summary.exit_code,
         duration_ms=summary.duration_ms,
         sequence=summary.sequence,
-        outcome="FAILED",
-        reason_code=reason_code,
-        output_snippet=snippet,
+        outcome="INCONCLUSIVE",
+        reason_code="INCONCLUSIVE_NON_ZERO_EXIT",
+        output_snippet=disp_snippet,
     )
 
 
@@ -542,9 +643,15 @@ def assess_read_only_audit(
         )
 
     if conclusive_count == 0:
+        if inconclusive_count > 0 and blocked_count == 0:
+            audit_reason = "ALL_CHECKS_INCONCLUSIVE"
+        elif blocked_count > 0 and inconclusive_count == 0:
+            audit_reason = "ALL_CHECKS_BLOCKED"
+        else:
+            audit_reason = "ALL_CHECKS_NON_CONCLUSIVE"
         return AuditEvidenceAssessment(
             status="UNVERIFIED",
-            reason="ALL_CHECKS_BLOCKED",
+            reason=audit_reason,
             total_checks=total_checks,
             passed_count=passed_count,
             failed_count=failed_count,
@@ -554,9 +661,15 @@ def assess_read_only_audit(
         )
 
     if non_conclusive_count > 0:
+        if blocked_count > 0 and inconclusive_count == 0:
+            audit_reason = "SOME_CHECKS_BLOCKED"
+        elif inconclusive_count > 0 and blocked_count == 0:
+            audit_reason = "SOME_CHECKS_INCONCLUSIVE"
+        else:
+            audit_reason = "SOME_CHECKS_NON_CONCLUSIVE"
         return AuditEvidenceAssessment(
             status="PARTIAL",
-            reason="SOME_CHECKS_BLOCKED",
+            reason=audit_reason,
             total_checks=total_checks,
             passed_count=passed_count,
             failed_count=failed_count,
@@ -1199,6 +1312,23 @@ def assess_turn(
             return VerificationAssessment(
                 status="BLOCKED",
                 reason="VERIFICATION_BLOCKED_AFTER_CONTINUATION",
+                evidence_level="NONE",
+                requires_continuation=False,
+                mutation_detected=True,
+                changed_files=deduped_files,
+                file_categories=sorted(file_cats),
+                dominant_category=dominant_cat,
+                executed_commands=executed_cmd_dicts,
+                valid_evidence_commands=valid_evidence_dicts,
+                command_outcomes=all_outcome_dicts,
+                audit_assessment=None,
+                last_mutation_sequence=last_mutation_seq,
+                turns_evaluated=2,
+            )
+        if any(o.outcome == "INCONCLUSIVE" for o in post_outcomes):
+            return VerificationAssessment(
+                status="UNVERIFIED",
+                reason="INCONCLUSIVE_VERIFICATION",
                 evidence_level="NONE",
                 requires_continuation=False,
                 mutation_detected=True,

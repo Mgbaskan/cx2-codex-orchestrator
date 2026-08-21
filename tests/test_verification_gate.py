@@ -290,6 +290,123 @@ class TestVerificationGate(unittest.TestCase):
         self.assertEqual(assessment.status, "UNVERIFIED")
         self.assertEqual(assessment.reason, "USER_REQUESTED_SKIP")
 
+    # =========================================================================
+    # FAZ 3: Final Adversarial Tests (Fallback & Precision)
+    # =========================================================================
+
+    def test_adversarial_a_custom_test_runner_inconclusive(self):
+        """Case A: Unknown error output on non-zero exit => INCONCLUSIVE."""
+        cmd = CommandExecutionSummary(
+            command="custom-test-runner",
+            exit_code=1,
+            categories=["TEST"],
+            output_snippet="unexpected backend error",
+        )
+        outcome = classify_command_outcome(cmd)
+        self.assertEqual(outcome.outcome, "INCONCLUSIVE")
+        self.assertEqual(outcome.reason_code, "INCONCLUSIVE_NON_ZERO_EXIT")
+
+    def test_adversarial_b_npm_test_infrastructure_error_inconclusive(self):
+        """Case B: npm test with infrastructure failure (no test results) => INCONCLUSIVE."""
+        cmd = CommandExecutionSummary(
+            command="npm test",
+            exit_code=1,
+            categories=["TEST"],
+            output_snippet="custom infrastructure backend unavailable",
+        )
+        outcome = classify_command_outcome(cmd)
+        self.assertEqual(outcome.outcome, "INCONCLUSIVE")
+        self.assertEqual(outcome.reason_code, "INCONCLUSIVE_NON_ZERO_EXIT")
+
+    def test_adversarial_c_npm_test_conclusive_failure(self):
+        """Case C: npm test with conclusive failing test report => FAILED / TEST_FAILURE."""
+        cmd = CommandExecutionSummary(
+            command="npm test",
+            exit_code=1,
+            categories=["TEST"],
+            output_snippet="FAIL src/app.test.ts\n2 failed, 10 passed",
+        )
+        outcome = classify_command_outcome(cmd)
+        self.assertEqual(outcome.outcome, "FAILED")
+        self.assertEqual(outcome.reason_code, "TEST_FAILURE")
+
+    def test_adversarial_d_go_test_conclusive_failure(self):
+        """Case D: go test with conclusive FAIL marker => FAILED / TEST_FAILURE."""
+        cmd = CommandExecutionSummary(
+            command="go test ./...",
+            exit_code=1,
+            categories=["TEST"],
+            output_snippet="FAIL example/pkg",
+        )
+        outcome = classify_command_outcome(cmd)
+        self.assertEqual(outcome.outcome, "FAILED")
+        self.assertEqual(outcome.reason_code, "TEST_FAILURE")
+
+    def test_adversarial_e_npm_test_sandbox_denied(self):
+        """Case E: npm test with sandbox / permission denial => BLOCKED / SANDBOX_DENIED."""
+        cmd = CommandExecutionSummary(
+            command="npm test",
+            exit_code=1,
+            categories=["TEST"],
+            output_snippet="Access is denied",
+        )
+        outcome = classify_command_outcome(cmd)
+        self.assertEqual(outcome.outcome, "BLOCKED")
+        self.assertEqual(outcome.reason_code, "SANDBOX_DENIED")
+
+    def test_adversarial_f_raw_classification_text_before_truncation(self):
+        """Case F: Classification inspects full text before 500-char snippet truncation."""
+        full_text = "A" * 550 + "\nError: spawn child_process: Access is denied"
+        cmd = CommandExecutionSummary(
+            command="npm test",
+            exit_code=1,
+            categories=["TEST"],
+            output_snippet=full_text[:500],
+            classification_text=full_text,
+        )
+        outcome = classify_command_outcome(cmd)
+        self.assertEqual(outcome.outcome, "BLOCKED")
+        self.assertEqual(outcome.reason_code, "SANDBOX_DENIED")
+
+    def test_audit_aggregation_passed_plus_inconclusive(self):
+        """Audit: 1 PASSED + 1 INCONCLUSIVE => PARTIAL."""
+        cmds = [
+            CommandExecutionSummary(command="npm test", exit_code=0, categories=["TEST"]),
+            CommandExecutionSummary(command="custom-test-runner", exit_code=1, categories=["TEST"], output_snippet="unexpected backend error"),
+        ]
+        audit = assess_read_only_audit(command_executions=cmds)
+        self.assertEqual(audit.status, "PARTIAL")
+        self.assertEqual(audit.passed_count, 1)
+        self.assertEqual(audit.inconclusive_count, 1)
+
+    def test_audit_aggregation_inconclusive_only(self):
+        """Audit: INCONCLUSIVE only => UNVERIFIED."""
+        cmds = [
+            CommandExecutionSummary(command="custom-test-runner", exit_code=1, categories=["TEST"], output_snippet="unexpected backend error"),
+        ]
+        audit = assess_read_only_audit(command_executions=cmds)
+        self.assertEqual(audit.status, "UNVERIFIED")
+        self.assertEqual(audit.inconclusive_count, 1)
+
+    def test_post_mutation_inconclusive_command(self):
+        """Post-mutation: Inconclusive command in continuation => UNVERIFIED / INCONCLUSIVE_VERIFICATION."""
+        assessment = assess_turn(
+            changed_files=["src/app.py"],
+            command_executions=[
+                CommandExecutionSummary(
+                    command="npm test",
+                    exit_code=1,
+                    categories=["TEST"],
+                    sequence=2,
+                    output_snippet="custom infrastructure backend unavailable",
+                )
+            ],
+            last_mutation_seq=1,
+            is_continuation=True,
+        )
+        self.assertEqual(assessment.status, "UNVERIFIED")
+        self.assertEqual(assessment.reason, "INCONCLUSIVE_VERIFICATION")
+
 
 if __name__ == "__main__":
     unittest.main()

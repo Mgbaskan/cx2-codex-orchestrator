@@ -185,6 +185,12 @@ def cx_runtime_env() -> dict[str, str]:
     # Local RTK command filtering/tracking remains RTK-owned.
     env["RTK_TELEMETRY_DISABLED"] = "1"
 
+    # Ensure Python bytecode does not pollute read-only workspaces
+    env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+
+    # Disable Go telemetry uploads for deterministic offline execution
+    env.setdefault("GOTELEMETRY", "off")
+
     return env
 
 

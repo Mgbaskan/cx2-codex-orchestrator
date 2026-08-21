@@ -125,7 +125,10 @@ class AppServerClient:
     # Process
     # =====================================================
 
-    def start(self) -> None:
+    def start(
+        self,
+        env: dict[str, str] | None = None,
+    ) -> None:
 
         if not self.codex_exe.exists():
             raise FileNotFoundError(
@@ -136,6 +139,10 @@ class AppServerClient:
             raise RuntimeError(
                 "App Server zaten çalışıyor."
             )
+
+        proc_env = dict(os.environ if env is None else env)
+        proc_env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
+        proc_env.setdefault("GOTELEMETRY", "off")
 
         self.process = subprocess.Popen(
             [
@@ -153,6 +160,7 @@ class AppServerClient:
             cwd=str(
                 Path.cwd()
             ),
+            env=proc_env,
         )
 
         if (

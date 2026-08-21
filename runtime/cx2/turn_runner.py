@@ -1154,6 +1154,15 @@ class StreamingTurnRunner:
                     time.monotonic()
                     >= deadline
                 ):
+                    try:
+                        self.interrupt(
+                            result.thread_id,
+                            result.turn_id,
+                        )
+                    except Exception:
+                        pass
+                    if result.status not in FINAL_STATUSES:
+                        result.status = "failed"
                     raise TimeoutError(
                         "turn/completed timeout: "
                         f"{result.turn_id}"

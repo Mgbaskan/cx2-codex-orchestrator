@@ -68,6 +68,82 @@ from verification_gate import (
 EXPECTED_ROUTER_VERSION = "1.2.1"
 RUNTIME_VERSION = "2.0.6"
 
+DEFAULT_TURN_TIMEOUTS: dict[str, float] = {
+    "routine": 300.0,
+    "standard": 450.0,
+    "deep": 600.0,
+}
+
+MIN_TURN_TIMEOUT_SEC: float = 30.0
+MAX_TURN_TIMEOUT_SEC: float = 1800.0
+
+
+def resolve_turn_timeout(
+    route_or_tier: dict[str, Any] | str | None,
+    policy: dict[str, Any] | None = None,
+) -> float:
+    """
+    Resolve deterministic, bounded turn timeout in seconds based on effective route tier and policy overrides.
+
+    Default timeouts:
+      - routine:  300.0s (5.0 min)
+      - standard: 450.0s (7.5 min)
+      - deep:     600.0s (10.0 min)
+
+    Policy configuration schema:
+      {
+        "execution": {
+          "turn_timeout_sec": {
+            "routine": 300,
+            "standard": 450,
+            "deep": 600
+          }
+        }
+      }
+
+    Validation rules:
+      - Missing policy/section/key => deterministic default for tier.
+      - Non-numeric / boolean / NaN / Inf => deterministic default for tier.
+      - Out-of-bounds numbers => clamped to [MIN_TURN_TIMEOUT_SEC, MAX_TURN_TIMEOUT_SEC].
+    """
+    if isinstance(route_or_tier, dict):
+        tier = str(route_or_tier.get("tier") or "routine").lower().strip()
+    elif isinstance(route_or_tier, str):
+        tier = route_or_tier.lower().strip()
+    else:
+        tier = "routine"
+
+    if tier not in DEFAULT_TURN_TIMEOUTS:
+        tier = "routine"
+
+    default_timeout = DEFAULT_TURN_TIMEOUTS[tier]
+
+    if not isinstance(policy, dict):
+        return default_timeout
+
+    execution_cfg = policy.get("execution")
+    if not isinstance(execution_cfg, dict):
+        return default_timeout
+
+    timeout_cfg = execution_cfg.get("turn_timeout_sec")
+    if not isinstance(timeout_cfg, dict):
+        return default_timeout
+
+    raw_val = timeout_cfg.get(tier)
+    # Reject booleans (isinstance(True, int) is True in Python)
+    if isinstance(raw_val, bool) or raw_val is None:
+        return default_timeout
+
+    if not isinstance(raw_val, (int, float)):
+        return default_timeout
+
+    import math
+    if math.isnan(raw_val) or math.isinf(raw_val):
+        return default_timeout
+
+    # Clamp to safe bounds [MIN_TURN_TIMEOUT_SEC, MAX_TURN_TIMEOUT_SEC]
+    return max(MIN_TURN_TIMEOUT_SEC, min(float(raw_val), MAX_TURN_TIMEOUT_SEC))
+
 
 class CX2RuntimeError(
     RuntimeError
@@ -920,6 +996,11 @@ class CX2Runtime:
                     quota=quota,
                 )
 
+            attempt_timeout = resolve_turn_timeout(
+                attempt_route,
+                policy,
+            )
+
             # Transport/auth/server errors are allowed to raise.
             # They are NOT evidence that a stronger model is needed.
             raw_result = runner.run_turn(
@@ -931,7 +1012,7 @@ class CX2Runtime:
                 permissions=permissions,
                 approval_policy=approval_policy,
                 input_items=input_items,
-                timeout=300.0,
+                timeout=attempt_timeout,
             )
 
             attempts_used += 1
@@ -1052,6 +1133,11 @@ class CX2Runtime:
                     "Destructive işlem yapma."
                 )
 
+                cont_timeout = resolve_turn_timeout(
+                    attempt_route,
+                    policy,
+                )
+
                 cont_raw_result = runner.run_turn(
                     thread_id=thread_id,
                     prompt=continuation_prompt,
@@ -1060,7 +1146,7 @@ class CX2Runtime:
                     effort=effort,
                     permissions=permissions,
                     approval_policy=approval_policy,
-                    timeout=300.0,
+                    timeout=cont_timeout,
                 )
 
                 attempts_used += 1
@@ -1240,9 +1326,13 @@ __all__ = [
     "CX2ExecutionResult",
     "CX2Runtime",
     "CX2RuntimeError",
+    "DEFAULT_TURN_TIMEOUTS",
     "EXPECTED_ROUTER_VERSION",
+    "MAX_TURN_TIMEOUT_SEC",
+    "MIN_TURN_TIMEOUT_SEC",
     "ProductionResultView",
     "ProductionStatusView",
     "RUNTIME_VERSION",
     "initialize_params",
+    "resolve_turn_timeout",
 ]

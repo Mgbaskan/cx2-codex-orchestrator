@@ -31,3 +31,22 @@ Approval prompts provide numbered options with clear Turkish labels mapped to na
   [1] Bu kez izin ver | [2] Oturum boyunca izin ver | [3] Reddet | [4] İptal
 Seçim [3]:
 ```
+
+## Verification & Audit Badges
+
+### Post-Mutation Verification
+When workspace files are modified, CX2 validates observed evidence and renders a single-line summary:
+```text
+[doğrulama] VERIFIED · 1 dosya · npm test · 0.4s
+[doğrulama] BAŞARISIZ · npm test · exit 1 · 1.3s
+[doğrulama] BLOCKED · go test · Access is denied · 0.2s
+```
+
+### Read-Only Audit Assurance
+During broad read-only inspections, CX2 evaluates verification completeness across executed commands:
+```text
+[audit] · COMPLETE · 3 checks · 3 passed
+[audit] · PARTIAL · 5 checks · 2 passed · 1 blocked
+[audit] · UNVERIFIED · 2 checks
+```
+*Note*: `inconclusive_count` is included in `total_checks` to ensure transparent accounting without producing false failure or passed claims.

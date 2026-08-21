@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.7] - 2026-08-21
+
+### Added
+- **Whole-Project Audit Routing Calibration**: Composite multi-signal detection (`broad-project-audit`) in the deterministic risk engine (`ROUTER_VERSION = "1.2.1"`), ensuring broad repository security, architecture, and defect audits escalate reliably to `deep` tier and `high` reasoning across English and Turkish phrasing.
+- **Isolated Read-Only Test Execution Environment**: Disposable per-process execution environment (`test_env.py`) wiring isolated writable cache roots (`TEMP`, `TMP`, `GOCACHE`, `GOTMPDIR`, `npm_config_cache`, `PYTHONPYCACHEPREFIX`) into App Server child processes, enabling test runners to initialize without mutating the source repository.
+- **Granular Command Outcome Classification**: Determinist outcome categorization separating true project-level failures (`FAILED` / `TEST_FAILURE`, `LINT_FAILURE`, `BUILD_FAILURE`, `TYPECHECK_FAILURE`) from sandbox/environment denials (`BLOCKED` / `SANDBOX_DENIED`, `ENV_CACHE_DENIED`, `EXECUTABLE_NOT_FOUND`).
+- **Conservative Inconclusive Verification**: Safe fallback classifying unverified non-zero exits or masked commands as `INCONCLUSIVE` instead of falsely reporting project test failures.
+- **Deterministic Read-Only Audit Assurance**: Aggregation engine evaluating evidence completeness (`COMPLETE`, `PARTIAL`, `UNVERIFIED`, `INTERRUPTED`) and rendering compact terminal badges (`[audit] · COMPLETE · 3 checks · 3 passed`).
+- **Route-Aware Dynamic Turn Timeouts**: Dynamic execution deadlines calibrated by tier (`routine: 300s`, `standard: 450s`, `deep: 600s`) with bounded custom policy override support `[30s, 1800s]`.
+- **Safe Timeout Turn Interruption**: Automated best-effort `turn/interrupt` dispatch to Codex App Server upon deadline expiration, reducing the risk of orphaned background work while preserving `TimeoutError` semantics.
+- **Bounded Broad-Audit Execution Guidance**: Process-local developer instructions for whole-project audits promoting risk-prioritized inspection, early verification execution, and synthesis budgeting without mutating the original user prompt.
+
+### Changed
+- Upgraded CLI version (`CLI_VERSION = "2.0.7"`) and runtime version (`RUNTIME_VERSION = "2.0.7"`).
+
 ## [2.0.6] - 2026-08-20
 
 ### Added

@@ -1,9 +1,15 @@
 # Known Limitations
 
-1. **PowerShell 5.1 Argument Parsing**: Upstream console argument parsing may strip quotes in certain complex multiline argv patterns before reaching the launcher.
-2. **Native Thread Deletion on Migrated Schemas**: On newer Codex state schemas (v42+), pinned Codex 0.144.4 safely degrades and refuses native deletion (`PINNED_01444_POST42_STATE_INCOMPATIBLE`). CX2 never mutates or drops state schema tables to force deletion; `/archive` is recommended instead.
-3. **Non-Git Workspaces**: Thread session persistence is process-local in non-git directories.
-4. **Repository Move / Rename**: Moving or renaming a repository directory initiates a new session binding.
-5. **CCE Acceleration**: Code Context Engine integration is experimental and disabled by default (`cce.enabled: false`).
-6. **Active Process Lock During Upgrades**: Upgrading CX2 while a CX session is actively running will fail safely because `runtime\venv` is locked by Windows; running CX instances must be closed before upgrading.
+1. **Windows-first Platform**: The installer, launcher, terminal presentation, and process isolation baseline are currently optimized for Windows environments.
+2. **Codex Compatibility Baseline**: Validated compatibility is pinned to OpenAI Codex 0.144.4 (`openai-codex==0.144.4`, `openai-codex-cli-bin==0.144.4`). Other or newer Codex versions are treated as `UNVERIFIED` and operate with safe degradation.
+3. **PowerShell 5.1 Argument Parsing**: Upstream console argument parsing may strip quotes in certain complex multiline argv patterns before reaching the launcher.
+4. **Native Thread Deletion on Migrated Schemas**: On newer Codex state schemas (v42+), pinned Codex 0.144.4 safely refuses native deletion (`PINNED_01444_POST42_STATE_INCOMPATIBLE`). CX2 never mutates or drops state schema tables to force deletion; `/archive` is recommended instead.
+5. **Non-Git Workspaces**: Thread session persistence is process-local in non-git directories; persistent cross-process sessions require a Git repository.
+6. **Repository Move / Rename**: Moving or renaming a repository directory initiates a new session binding.
 7. **Deterministic Routing Heuristics**: Routing is rule-based, fast, and model-free. While Risk Engine v2 accounts for lexical, scope, sensitive surface, and repository signals, heuristic classification is not equivalent to full semantic LLM understanding.
+8. **Broad Whole-Project Audits on Massive Repositories**: Default deep turn timeout is 600s. Extremely large codebases with hundreds of files may require user-configured turn timeout policy overrides (up to 1800s in `policy.json`) if exploration exceeds default bounds.
+9. **Best-Effort Timeout Interruption**: Turn timeout interruption dispatches a best-effort `turn/interrupt` request to the App Server. If stdio transport itself is hung, the local process terminates the turn safely with `TimeoutError`.
+10. **Workspace-Write Tools in Read-Only Sandboxes**: Test runners or linters that attempt to write directly to source directories (e.g. creating in-tree cache/coverage files) will be classified as `BLOCKED` in `read-only` sandbox mode.
+11. **Verification & Audit Assurance Scope**: `VERIFIED` and `[audit] · COMPLETE` measure observed evidence completeness, not mathematical proof of program correctness.
+12. **Inconclusive Outcomes**: `INCONCLUSIVE` signifies insufficient evidence to prove success, test failure, or environment denial; it is not automatically a project bug.
+13. **Active Process Lock During Upgrades**: Upgrading CX2 while a CX session is actively running will fail safely because `runtime\venv` is locked by Windows; running CX instances must be closed before upgrading.

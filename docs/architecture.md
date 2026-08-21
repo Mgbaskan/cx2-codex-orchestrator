@@ -37,3 +37,8 @@ CX2 is structured into decoupled supervisory and presentation components.
    - Validated baseline pinning (`0.144.4`) with non-fatal degradation for unverified newer runtimes.
    - Fail-closed native delete protection against modified SQLite state schemas without mutating user state.
    - Structured diagnostic summaries for `/doctor`.
+
+8. **Test Environment Isolation (`runtime/cx2/test_env.py`)**:
+   - Manages disposable per-process temporary directories and isolated cache profiles (`TEMP`, `GOCACHE`, `GOTMPDIR`, `npm_config_cache`, `PYTHONPYCACHEPREFIX`).
+   - Ensures test runners execute cleanly under read-only sandboxes without contaminating source trees.
+   - Owned disposable execution directories are cleaned during normal App Server shutdown, with defensive cleanup safety checks.

@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
-[![Release](https://img.shields.io/badge/release-v2.0.6-green.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/releases/tag/v2.0.6)
+[![Release](https://img.shields.io/badge/release-v2.0.7-green.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/releases/tag/v2.0.7)
 [![Tests](https://github.com/Mgbaskan/cx2-codex-orchestrator/actions/workflows/test.yml/badge.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/actions/workflows/test.yml)
 
 **CX2** is a Windows-first, policy-driven orchestration and terminal UX layer for OpenAI Codex.
@@ -138,7 +138,7 @@ but it also means classification is not equivalent to full semantic understandin
 
 CX2 can map routing tiers to available Codex models.
 
-The current v2.0.6 policy may use models such as:
+The current v2.0.7 policy may use models such as:
 
 ```text
 routine  -> gpt-5.6-luna
@@ -355,6 +355,34 @@ It means:
 > the observed validation evidence satisfied CX2's verification rules.
 
 Human review remains appropriate for important changes.
+
+---
+
+## Read-Only Audit Assurance
+
+During read-only inspection and broad repository audit tasks, CX2 tracks verification command executions and evaluates overall evidence completeness:
+
+```text
+[audit] · COMPLETE · 3 checks · 3 passed
+```
+
+Partial evidence (e.g. when some checks pass while others are blocked by sandbox/environment limits):
+
+```text
+[audit] · PARTIAL · 5 checks · 2 passed
+```
+
+### Bounded Whole-Project Audits
+
+Broad whole-project audits use bounded, risk-prioritized execution guidance to reduce exhaustive sequential traversal and reserve execution budget for verification and structured finalization.
+
+Tier-calibrated timeouts reduce premature timeout risk for complex deep tasks while keeping routine tasks bounded:
+
+```text
+routine  -> 300s
+standard -> 450s
+deep     -> 600s
+```
 
 ---
 
@@ -737,7 +765,7 @@ No specific optimization or token-saving percentage is guaranteed.
 
 # Known Limitations
 
-CX2 v2.0.6 currently has several known limitations.
+CX2 v2.0.7 currently has several known limitations.
 
 ### Windows-first
 
@@ -783,7 +811,9 @@ Routing is heuristic and rule-based.
 
 It is predictable and testable, but it does not have the semantic understanding of a dedicated language model.
 
-Future versions may incorporate additional deterministic repository signals without introducing an extra routing model.
+### Broad Whole-Project Audits
+
+Broad audits on massive codebases with hundreds of files may require custom turn timeout configuration in `policy.json` (e.g. up to 1800s) if the default 600s budget is exhausted during deep inspection.
 
 ---
 
@@ -792,7 +822,7 @@ Future versions may incorporate additional deterministic repository signals with
 Current stable release:
 
 ```text
-CX2 2.0.6
+CX2 2.0.7
 ```
 
 Status:

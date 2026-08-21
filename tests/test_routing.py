@@ -394,16 +394,16 @@ class TestRouting(unittest.TestCase):
         self.assertIn("risk_signals", res)
         self.assertIn("score_breakdown", res)
         self.assertIn("router_version", res)
-        self.assertEqual(res["router_version"], "1.2.0")
+        self.assertEqual(res["router_version"], "1.2.1")
 
     def test_router_version_consistency_across_adapters(self):
         """All adapter EXPECTED_ROUTER_VERSION guards must match cx.ROUTER_VERSION."""
-        self.assertEqual(cx.ROUTER_VERSION, "1.2.0")
-        self.assertEqual(router_adapter.EXPECTED_ROUTER_VERSION, "1.2.0")
-        self.assertEqual(budget_adapter.EXPECTED_ROUTER_VERSION, "1.2.0")
-        self.assertEqual(session_adapter.EXPECTED_ROUTER_VERSION, "1.2.0")
-        self.assertEqual(telemetry_adapter.EXPECTED_ROUTER_VERSION, "1.2.0")
-        self.assertEqual(cx2_runtime.EXPECTED_ROUTER_VERSION, "1.2.0")
+        self.assertEqual(cx.ROUTER_VERSION, "1.2.1")
+        self.assertEqual(router_adapter.EXPECTED_ROUTER_VERSION, "1.2.1")
+        self.assertEqual(budget_adapter.EXPECTED_ROUTER_VERSION, "1.2.1")
+        self.assertEqual(session_adapter.EXPECTED_ROUTER_VERSION, "1.2.1")
+        self.assertEqual(telemetry_adapter.EXPECTED_ROUTER_VERSION, "1.2.1")
+        self.assertEqual(cx2_runtime.EXPECTED_ROUTER_VERSION, "1.2.1")
 
     def test_graceful_missing_repo_metadata(self):
         """Empty or incomplete repo metadata must not crash the classifier."""
@@ -420,6 +420,133 @@ class TestRouting(unittest.TestCase):
         self.assertIn("README.md", paths)
         self.assertIn("Dockerfile", paths)
         self.assertIn("prisma/schema.prisma", paths)
+
+    # =========================================================================
+    # PHASE 1 — WHOLE-PROJECT AUDIT / BROAD INSPECTION REGRESSION TESTS
+    # =========================================================================
+
+    def test_real_user_prompt_whole_project_audit_is_deep(self):
+        """Real prompt: 'Dostum bu projeyi komple baştan aşağı inceleyip analiz et ve bana bulduğun açıkları / eksikleri / hataları raporla.' => deep."""
+        prompt = "Dostum bu projeyi komple baştan aşağı inceleyip analiz et ve bana bulduğun açıkları / eksikleri / hataları raporla."
+        res = cx.classify(prompt, self.repo, self.policy)
+        self.assertEqual(res["tier"], "deep")
+        self.assertEqual(res["reasoning"], "high")
+        self.assertEqual(res["sandbox"], "read-only")
+        self.assertFalse(res["mutating"])
+        self.assertGreaterEqual(res["score"], self.policy["thresholds"]["deep_min"])
+
+    def test_turkish_broad_audit_variations(self):
+        """At least 10 Turkish broad-audit variations must classify as deep / read-only."""
+        prompts = [
+            "Bu projeyi komple baştan aşağı inceleyip analiz et ve açıkları, eksikleri ve hataları raporla",
+            "Projeyi baştan sona incele ve sorunları bul",
+            "Tüm codebase'i audit et ve security açıklarını ara",
+            "Bütün sistemi incele, güvenlik açıklarını ve hataları çıkar",
+            "Projeyi uçtan uca analiz et, eksikleri ve riskleri raporla",
+            "Tüm repository genelinde security ve reliability audit yap",
+            "Projeyi komple tara ve olası açıkları listele",
+            "Bütün repoyu baştan aşağı gözden geçir, zafiyetleri tespit et",
+            "Tüm kodları uçtan uca denetle, güvenlik sorunlarını ve eksikleri bul",
+            "Proje genelinde mimari ve güvenlik denetimi yapıp riskleri çıkar",
+            "Tüm projeyi analiz et ve mimari kusurları raporla",
+        ]
+        for p in prompts:
+            res = cx.classify(p, self.repo, self.policy)
+            self.assertEqual(res["tier"], "deep", f"Failed on prompt: {p} (tier={res['tier']}, score={res['score']})")
+            self.assertEqual(res["sandbox"], "read-only", f"Failed sandbox on prompt: {p}")
+            self.assertFalse(res["mutating"], f"Failed mutating on prompt: {p}")
+
+    def test_english_broad_audit_variations(self):
+        """At least 10 English broad-audit variations must classify as deep / read-only."""
+        prompts = [
+            "Audit the entire repository for vulnerabilities and bugs",
+            "Review the whole project for flaws, missing protections and configuration issues",
+            "Inspect the entire codebase end to end and report problems",
+            "Scan the whole project for architectural, security and runtime issues",
+            "Perform a full codebase audit and report all security holes and defects",
+            "Comprehensive security and reliability audit across all repository files",
+            "Inspect the entire repository, find vulnerabilities, gaps, and bugs",
+            "End to end code review across the whole codebase for risks and weaknesses",
+            "Thoroughly analyze the entire system and identify potential flaws and errors",
+            "Deep scan across the entire project for vulnerabilities and bottlenecks",
+            "Audit all services and packages for security flaws and missing protections",
+        ]
+        for p in prompts:
+            res = cx.classify(p, self.repo, self.policy)
+            self.assertEqual(res["tier"], "deep", f"Failed on prompt: {p} (tier={res['tier']}, score={res['score']})")
+            self.assertEqual(res["sandbox"], "read-only", f"Failed sandbox on prompt: {p}")
+            self.assertFalse(res["mutating"], f"Failed mutating on prompt: {p}")
+
+    def test_broad_audit_negative_controls(self):
+        """At least 10 negative control cases must NOT be escalated to deep."""
+        controls = [
+            # (prompt, expected_tier, expected_sandbox, expected_mutating)
+            ("Review security module, read-only, do not modify files", "standard", "read-only", False),
+            ("Review authentication module for security issues, read-only", "standard", "read-only", False),
+            ("Explain the authentication flow and do not modify files", "standard", "read-only", False),
+            ("Change the Authentication button color", "routine", "workspace-write", True),
+            ("Fix authentication typo in README.md", "routine", "workspace-write", True),
+            ("Explain package.json scripts", "routine", "read-only", False),
+            ("Explain what this database migration does and do not modify files", "not_deep", "read-only", False),
+            ("Inspect user authorization logic in auth.py, no changes", "standard", "read-only", False),
+            ("Check database connection pool configuration in db.ts", "not_deep", "read-only", False),
+            ("Kimlik doğrulama akışını açıkla ve dosyalarda değişiklik yapma", "standard", "read-only", False),
+            ("Güvenlik modülünü incele, salt okunur, hiçbir dosyayı değiştirme", "standard", "read-only", False),
+        ]
+        for p, exp_tier, exp_sandbox, exp_mutating in controls:
+            res = cx.classify(p, self.repo, self.policy)
+            if exp_tier == "not_deep":
+                self.assertNotEqual(res["tier"], "deep", f"Negative control failed on prompt: {p} (tier={res['tier']}, score={res['score']})")
+            else:
+                self.assertEqual(res["tier"], exp_tier, f"Negative control failed on prompt: {p} (tier={res['tier']}, score={res['score']})")
+            self.assertEqual(res["sandbox"], exp_sandbox, f"Negative control sandbox failed on prompt: {p}")
+            self.assertEqual(res["mutating"], exp_mutating, f"Negative control mutating failed on prompt: {p}")
+
+        # Trivial task on large and dirty repo must remain routine
+        res_large = cx.classify("Fix typo in README.md", {"git": True, "clean": True, "monorepo": False, "dirty_files": 0, "tracked_files_bucket": "large"}, self.policy)
+        self.assertEqual(res_large["tier"], "routine")
+
+        res_dirty = cx.classify("Change button color to blue", {"git": True, "clean": False, "monorepo": False, "dirty_files": 100}, self.policy)
+        self.assertEqual(res_dirty["tier"], "routine")
+
+    def test_adversarial_negative_controls(self):
+        """Adversarial negative controls: broad-scope keywords in routine/doc/typo/formatting tasks must NOT be deep."""
+        cases = [
+            ("Review all documentation in the repository for typos", "not_deep", "read-only", False),
+            ("Fix typos across all README and docs files", "not_deep", "workspace-write", True),
+            ("Check the entire repository for formatting issues in Markdown files", "not_deep", "read-only", False),
+            ("Rename a label across all documentation files", "not_deep", "workspace-write", True),
+            ("Review all package.json scripts and explain what they do", "not_deep", "read-only", False),
+            ("Tüm projedeki README ve dokümantasyon yazım hatalarını kontrol et", "not_deep", "read-only", False),
+            ("Bütün dokümantasyon dosyalarındaki yazım hatalarını düzelt", "not_deep", "workspace-write", True),
+            ("Proje genelindeki Markdown biçimlendirmesini kontrol et", "not_deep", "read-only", False),
+            ("Projede geçen şirket adını bütün dokümantasyon dosyalarında yeniden adlandır", "not_deep", "workspace-write", True),
+            ("Tüm package.json scriptlerini incele ve ne yaptıklarını açıkla", "not_deep", "read-only", False),
+        ]
+        for p, exp_tier, exp_sandbox, exp_mutating in cases:
+            res = cx.classify(p, self.repo, self.policy)
+            if exp_tier == "not_deep":
+                self.assertNotEqual(res["tier"], "deep", f"Adversarial negative control failed on prompt: {p} (tier={res['tier']}, score={res['score']})")
+            else:
+                self.assertEqual(res["tier"], exp_tier, f"Adversarial negative control failed on prompt: {p} (tier={res['tier']}, score={res['score']})")
+            self.assertEqual(res["sandbox"], exp_sandbox, f"Adversarial negative sandbox failed on prompt: {p}")
+            self.assertEqual(res["mutating"], exp_mutating, f"Adversarial negative mutating failed on prompt: {p}")
+
+    def test_adversarial_positive_controls(self):
+        """Adversarial positive controls: true whole-project audits MUST be deep / read-only."""
+        cases = [
+            "Dostum bu projeyi komple baştan aşağı inceleyip analiz et ve bana bulduğun açıkları / eksikleri / hataları raporla.",
+            "Audit the entire repository for vulnerabilities and bugs",
+            "Inspect the entire codebase end to end and report architectural, security and runtime issues",
+            "Bütün sistemi incele, güvenlik açıklarını, mimari sorunları ve hataları raporla",
+            "Scan the whole project for security vulnerabilities, configuration weaknesses and runtime failures",
+        ]
+        for p in cases:
+            res = cx.classify(p, self.repo, self.policy)
+            self.assertEqual(res["tier"], "deep", f"Adversarial positive control failed on prompt: {p} (tier={res['tier']}, score={res['score']})")
+            self.assertEqual(res["reasoning"], "high", f"Adversarial positive reasoning failed on prompt: {p}")
+            self.assertEqual(res["sandbox"], "read-only", f"Adversarial positive sandbox failed on prompt: {p}")
+            self.assertFalse(res["mutating"], f"Adversarial positive mutating failed on prompt: {p}")
 
 
 if __name__ == "__main__":

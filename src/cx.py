@@ -101,7 +101,7 @@ SHIM_DIR = CX_HOME / "shims"
 SHIM_CONFIG_FILE = CX_HOME / "data" / "rtk-shims.json"
 QUOTA_FILE = CX_HOME / "data" / "quota-current.json"
 
-ROUTER_VERSION = "1.2.0"
+ROUTER_VERSION = "1.2.1"
 
 
 CX_CONFIG_OVERRIDES = (
@@ -766,9 +766,29 @@ DOMAIN_RULES: list[tuple[str, str]] = [
 
 # High-Risk / Broad Task Scope (Weight: +3)
 BROAD_SCOPE_RULES: list[str] = [
-    r"\b(?:whole|entire|all)\s+(?:repo|repository|project|codebase)\b|\btum\s+(?:proje|repo|kod|servisler)\w*|\bbutun\s+(?:proje|repo|kod|servisler)\w*|\bkomple\s+(?:proje|repo)\w*",
-    r"\b(?:all|across\s+all)\s+(?:services|packages|modules|microservices)\b|\bcross[- ]service\b|\bsystem[- ]wide\b|\bmonorepo[- ]wide\b|\btum\s+servisler\s+genelinde\b",
+    r"\b(?:whole|entire|all|full)\s+(?:repo|repository|project|codebase|system|app|application)\b",
+    r"\b(?:all|across\s+all)\s+(?:services|packages|modules|microservices|components|files|code)\b",
+    r"\b(?:across|throughout)\s+(?:the\s+)?(?:whole\s+|entire\s+)?(?:repo|repository|project|codebase|system)\b",
+    r"\b(?:cross[- ]service|system[- ]wide|monorepo[- ]wide|codebase[- ]wide|repo[- ]wide|project[- ]wide)\b|\btum\s+servisler\s+genelinde\b",
     r"\bfull[- ]stack\s+refactor\b|\bdatabase\s*\+\s*backend\s*\+\s*(?:deployment|frontend)\b",
+    r"\b(?:tum|butun|komple)\s+(?:bu\s+)?(?:proje|repo|repository|kod|kodlar|kodlama|codebase|sistem|servis|servisler|uygulama)\w*",
+    r"\b(?:bu\s+)?(?:proje|repo|repository|kod|kodlar|kodlama|codebase|sistem|uygulama)(?:yi|ye|de|den|in|nin)?\s+komple\b",
+    r"\b(?:bu\s+)?(?:proje|repo|repository|kod|kodlar|kodlama|codebase|sistem|uygulama)(?:yi|ye|de|den|in|nin)?\s+(?:bastan\s+asagi|bastan\s+sona|bastan\s+basa|uctan\s+uca|genelinde|tamamini)\b",
+    r"\b(?:bastan\s+asagi|bastan\s+sona|bastan\s+basa|uctan\s+uca)\s+(?:bu\s+)?(?:proje|repo|repository|kod|codebase|sistem|uygulama)\w*",
+    r"\b(?:tum\s+servisler|sistem|proje|repo|codebase)\s+genelinde\b",
+]
+
+# Comprehensive Audit & Inspection Rules
+AUDIT_INSPECTION_RULES: list[str] = [
+    r"\b(?:audit|inspect|inspection|scan|review|analyze|analyse|analysis|evaluation|evaluate|assess|assessment|examine|examination)\b",
+    r"\b(?:deep[- ]scan|deep[- ]dive|comprehensive\s+review|thorough\s+review|full\s+audit)\b",
+    r"\b(?:denetle\w*|denetim\w*|incele\w*|inceleme\w*|analiz\w*|tara\w*|tarama\w*|degerlendir\w*|gozden\s+gecir\w*)\b",
+]
+
+# Defect, Vulnerability, and Risk Hunting Rules
+DEFECT_HUNTING_RULES: list[str] = [
+    r"\b(?:vulnerabilit\w*|flaw\w*|bug\w*|defect\w*|issue\w*|problem\w*|weakness\w*|gap\w*|risk\w*|error\w*|security\s+hole\w*|security\s+flaw\w*|missing\s+protection\w*|configuration\s+issue\w*|bottleneck\w*)\b",
+    r"\b(?:acik\w*|guvenlik\s+acig\w*|guvenlik\s+acik\w*|zafiyet\w*|zaafiyet\w*|hata\w*|eksik\w*|kusur\w*|problem\w*|sorun\w*|risk\w*)\b",
 ]
 
 # Sensitive Surface & Mutation Risk (Evaluated when mutating is True)
@@ -992,22 +1012,36 @@ def evaluate_lexical_signals(
 
 def evaluate_scope_signals(
     text: str,
-) -> tuple[int, list[str], list[str]]:
+) -> tuple[int, list[str], list[str], bool]:
     """
-    Evaluate task scope signals.
-    Returns (points, reasons, signal_tags).
+    Evaluate task scope signals and composite broad project audit.
+    Returns (points, reasons, signal_tags, has_broad_project_audit).
     """
     points = 0
     reasons: list[str] = []
     tags: list[str] = []
+    has_broad_project_audit = False
 
+    has_broad_scope = False
     for pat in BROAD_SCOPE_RULES:
         if re.search(pat, text, re.IGNORECASE):
+            has_broad_scope = True
             tags.append(f"broad-scope:{pat[:25]}")
             reasons.append("+3:broad-scope")
             points += 3
+            break
 
-    return points, reasons, tags
+    if has_broad_scope:
+        has_audit = any(re.search(pat, text, re.IGNORECASE) for pat in AUDIT_INSPECTION_RULES)
+        has_defect = any(re.search(pat, text, re.IGNORECASE) for pat in DEFECT_HUNTING_RULES)
+        is_routine_inspection = any(re.search(pat, text, re.IGNORECASE) for pat in ROUTINE_RULES)
+        if (has_audit or has_defect) and not is_routine_inspection:
+            has_broad_project_audit = True
+            tags.append("broad-project-audit")
+            reasons.append("+4:broad-project-audit")
+            points += 4
+
+    return points, reasons, tags, has_broad_project_audit
 
 
 def evaluate_sensitive_mutation_signals(
@@ -1144,7 +1178,7 @@ def classify(
     signals["lexical"].extend(lex_tags)
 
     # 3. Task Scope signals
-    scope_points, scope_reasons, scope_tags = evaluate_scope_signals(text)
+    scope_points, scope_reasons, scope_tags, has_broad_project_audit = evaluate_scope_signals(text)
     score_breakdown["scope"] += scope_points
     reasons.extend(scope_reasons)
     signals["scope"].extend(scope_tags)
@@ -1186,6 +1220,11 @@ def classify(
         if final_score < deep_min:
             final_score = deep_min
             reasons.append("dominate-deep:critical-concurrency")
+
+    if has_broad_project_audit:
+        if final_score < deep_min:
+            final_score = deep_min
+            reasons.append("dominate-deep:broad-project-audit")
 
     # 9. Tier resolution
     if final_score <= routine_max:

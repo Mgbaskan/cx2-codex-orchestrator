@@ -32,7 +32,7 @@ from router_adapter import (
 )
 
 
-EXPECTED_ROUTER_VERSION = "1.2.0"
+EXPECTED_ROUTER_VERSION = "1.2.1"
 
 
 class BudgetAdapterError(

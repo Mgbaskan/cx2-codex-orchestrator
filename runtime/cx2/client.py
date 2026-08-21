@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
 import queue
 import subprocess
@@ -40,6 +41,12 @@ RESULT_FILE = (
 )
 
 
+from test_env import (
+    build_test_environment,
+    ExecutionEnvironmentProfile,
+)
+
+
 class AppServerProtocolError(
     RuntimeError
 ):
@@ -75,6 +82,16 @@ class AppServerClient:
 
         self.process: (
             subprocess.Popen[str]
+            | None
+        ) = None
+
+        self._owned_env_profile: (
+            ExecutionEnvironmentProfile
+            | None
+        ) = None
+
+        self.launched_env: (
+            dict[str, str]
             | None
         ) = None
 
@@ -140,9 +157,29 @@ class AppServerClient:
                 "App Server zaten çalışıyor."
             )
 
-        proc_env = dict(os.environ if env is None else env)
-        proc_env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
-        proc_env.setdefault("GOTELEMETRY", "off")
+        if env is None:
+            self._owned_env_profile = (
+                build_test_environment(
+                    base_env=dict(
+                        os.environ
+                    )
+                )
+            )
+            proc_env = (
+                self._owned_env_profile.env_overrides
+            )
+        else:
+            proc_env = dict(env)
+            proc_env.setdefault(
+                "PYTHONDONTWRITEBYTECODE",
+                "1",
+            )
+            proc_env.setdefault(
+                "GOTELEMETRY",
+                "off",
+            )
+
+        self.launched_env = proc_env
 
         self.process = subprocess.Popen(
             [
@@ -245,6 +282,18 @@ class AppServerClient:
                 timeout=1.0
             )
 
+        try:
+            if process.stdout:
+                process.stdout.close()
+        except Exception:
+            pass
+
+        try:
+            if process.stderr:
+                process.stderr.close()
+        except Exception:
+            pass
+
         error = {
             "__cx2_transport_error__":
                 "App Server client closed"
@@ -266,6 +315,13 @@ class AppServerClient:
             )
         except Exception:
             pass
+
+        if self._owned_env_profile is not None:
+            try:
+                self._owned_env_profile.cleanup()
+            except Exception:
+                pass
+            self._owned_env_profile = None
 
         self.process = None
 

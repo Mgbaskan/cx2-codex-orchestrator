@@ -57,6 +57,11 @@ class ExecutionEnvironmentProfile:
                 f"Refusing to delete temp root with unexpected prefix: {resolved_root.name}"
             )
 
+        if os.path.islink(resolved_root):
+            raise ExecutionEnvironmentError(
+                f"Refusing to delete symlink or reparse point temp root: {resolved_root}"
+            )
+
         if resolved_root.exists():
             shutil.rmtree(resolved_root, ignore_errors=True)
 

@@ -336,6 +336,12 @@ def safe_item_summary(
                 key
             ]
 
+    # Bounded output snippet for error / status diagnosis
+    if result.get("type") == "commandExecution":
+        raw_output = item.get("output") or item.get("error") or item.get("stderr") or ""
+        if isinstance(raw_output, str) and raw_output.strip():
+            result["output_snippet"] = raw_output.strip()[:500]
+
     # Do not include raw reasoning content.
     if (
         result.get(
@@ -2233,6 +2239,7 @@ class StreamingTurnRunner:
                     "categories": cats,
                     "is_masked": masked,
                     "display_command": disp_cmd,
+                    "output_snippet": completed_summary.get("output_snippet", ""),
                 })
 
             if (

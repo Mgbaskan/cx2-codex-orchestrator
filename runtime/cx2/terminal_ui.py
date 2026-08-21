@@ -1365,14 +1365,61 @@ class TerminalRenderer:
             valid_cmds = assessment.get("valid_evidence_commands", [])
             dominant_cat = assessment.get("dominant_category", "OTHER")
             reason = assessment.get("reason", "")
+            audit_assessment = assessment.get("audit_assessment")
         else:
             status = getattr(assessment, "status", None)
             changed_files = getattr(assessment, "changed_files", [])
             valid_cmds = getattr(assessment, "valid_evidence_commands", [])
             dominant_cat = getattr(assessment, "dominant_category", "OTHER")
             reason = getattr(assessment, "reason", "")
+            audit_assessment = getattr(assessment, "audit_assessment", None)
 
+        # Read-only audit assurance rendering
         if status == "NOT_APPLICABLE" and not changed_files:
+            if not audit_assessment:
+                return
+
+            if isinstance(audit_assessment, dict):
+                a_status = audit_assessment.get("status", "UNVERIFIED")
+                tot_checks = audit_assessment.get("total_checks", 0)
+                p_cnt = audit_assessment.get("passed_count", 0)
+                f_cnt = audit_assessment.get("failed_count", 0)
+                b_cnt = audit_assessment.get("blocked_count", 0)
+            else:
+                a_status = getattr(audit_assessment, "status", "UNVERIFIED")
+                tot_checks = getattr(audit_assessment, "total_checks", 0)
+                p_cnt = getattr(audit_assessment, "passed_count", 0)
+                f_cnt = getattr(audit_assessment, "failed_count", 0)
+                b_cnt = getattr(audit_assessment, "blocked_count", 0)
+
+            if tot_checks == 0 and a_status != "INTERRUPTED":
+                return
+
+            self.stop_activity()
+            self._line()
+
+            audit_prefix = self._bold("[audit]")
+            if a_status == "COMPLETE":
+                a_badge = self._green("COMPLETE")
+            elif a_status == "PARTIAL":
+                a_badge = self._yellow("PARTIAL")
+            elif a_status == "INTERRUPTED":
+                a_badge = self._yellow("INTERRUPTED")
+            else:
+                a_badge = self._yellow("UNVERIFIED")
+
+            audit_parts = [audit_prefix, a_badge]
+            if tot_checks > 0:
+                audit_parts.append(f"{tot_checks} {'check' if tot_checks == 1 else 'checks'}")
+                if p_cnt > 0:
+                    audit_parts.append(f"{p_cnt} passed")
+                if f_cnt > 0:
+                    audit_parts.append(f"{f_cnt} failed")
+                if b_cnt > 0:
+                    audit_parts.append(f"{b_cnt} blocked")
+
+            self._line(" · ".join(audit_parts))
+            self._line()
             return
 
         self.stop_activity()
@@ -1396,6 +1443,8 @@ class TerminalRenderer:
                 status_text = self._yellow("PARTIALLY_VERIFIED")
             elif status == "NOT_APPLICABLE":
                 status_text = "NOT_APPLICABLE"
+            elif status == "FAILED":
+                status_text = self._red("FAILED")
             elif status == "BLOCKED":
                 status_text = self._red("BLOCKED")
             elif status == "INTERRUPTED":
@@ -1406,7 +1455,7 @@ class TerminalRenderer:
             self._line()
             return
 
-        # Compact Badge Construction for Batch T4
+        # Compact Badge Construction
         prefix = self._bold("[doğrulama]")
 
         # 1. Status label & styling
@@ -1416,9 +1465,12 @@ class TerminalRenderer:
         elif status == "PARTIALLY_VERIFIED":
             status_badge = self._yellow("PARTIALLY_VERIFIED")
             status_plain = "PARTIALLY_VERIFIED"
+        elif status == "FAILED":
+            status_badge = self._red("FAILED")
+            status_plain = "FAILED"
         elif status == "BLOCKED":
-            status_badge = self._red("BAŞARISIZ")
-            status_plain = "BAŞARISIZ"
+            status_badge = self._red("BLOCKED")
+            status_plain = "BLOCKED"
         elif status == "INTERRUPTED":
             status_badge = self._yellow("KESİLDİ")
             status_plain = "KESİLDİ"
@@ -1509,7 +1561,7 @@ class TerminalRenderer:
             self._line(compact_line)
 
         # Failure or skip diagnostics if applicable
-        if status in {"BLOCKED", "UNVERIFIED"} and reason and reason not in {"USER_REQUESTED_SKIP", "NONE", "REASON"}:
+        if status in {"BLOCKED", "FAILED", "UNVERIFIED"} and reason and reason not in {"USER_REQUESTED_SKIP", "NONE", "REASON"}:
             self._line(f"  {self._dim(reason)}")
         elif reason == "USER_REQUESTED_SKIP":
             self._line(f"  {self._dim('Kullanıcı talebiyle doğrulama atlandı')}")

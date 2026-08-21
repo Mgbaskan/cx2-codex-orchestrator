@@ -1003,6 +1003,8 @@ class CX2Runtime:
                     sequence=int(cmd.get("sequence", 0)),
                     categories=list(cmd.get("categories", [])),
                     is_masked=bool(cmd.get("is_masked", False)),
+                    output_snippet=str(cmd.get("output_snippet") or ""),
+                    display_command=str(cmd.get("display_command") or ""),
                 )
                 for cmd in getattr(final_raw, "command_executions", [])
                 if isinstance(cmd, dict)
@@ -1095,6 +1097,7 @@ class CX2Runtime:
                         sequence=int(cmd.get("sequence", 0)) + t1_seq,
                         categories=list(cmd.get("categories", [])),
                         is_masked=bool(cmd.get("is_masked", False)),
+                        output_snippet=str(cmd.get("output_snippet") or ""),
                         display_command=str(cmd.get("display_command") or ""),
                     )
                     for cmd in getattr(cont_raw_result, "command_executions", [])

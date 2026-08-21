@@ -62,17 +62,96 @@ class TestTerminalUI(unittest.TestCase):
         self.assertIn("1 dosya (src/auth.ts)", out)
         self.assertIn("npm test", out)
 
-    def test_approval_prompt_safe_default(self):
+    def test_verification_badge_failed_test(self):
         stream = io.StringIO()
         renderer = TerminalRenderer(stream=stream)
-        with patch.object(TerminalRenderer, "can_prompt", new_callable=PropertyMock, return_value=True), patch("builtins.input", return_value=""):
-            decision = renderer.approval_prompt(
-                title="Run command",
-                details=["npm test"],
-                decisions=["accept", "decline"],
-                default_decision="decline",
-            )
-            self.assertEqual(decision, "decline")
+        assessment = self._make_assessment(
+            status="FAILED",
+            changed_files=["src/app.py"],
+            valid_cmds=[{"command": "npm test", "exit_code": 1, "duration_ms": 200}],
+            reason="TEST_FAILED_AFTER_CONTINUATION",
+        )
+        renderer.render_verification_summary(assessment)
+        out = stream.getvalue()
+        self.assertIn("[doğrulama]", out)
+        self.assertIn("FAILED", out)
+        self.assertIn("1 dosya (src/app.py)", out)
+        self.assertIn("npm test · exit 1", out)
+
+    def test_verification_badge_blocked_env(self):
+        stream = io.StringIO()
+        renderer = TerminalRenderer(stream=stream)
+        assessment = self._make_assessment(
+            status="BLOCKED",
+            changed_files=["src/app.py"],
+            valid_cmds=[{"command": "go test ./...", "exit_code": 1, "duration_ms": 150}],
+            reason="VERIFICATION_BLOCKED_AFTER_CONTINUATION",
+        )
+        renderer.render_verification_summary(assessment)
+        out = stream.getvalue()
+        self.assertIn("[doğrulama]", out)
+        self.assertIn("BLOCKED", out)
+        self.assertIn("1 dosya (src/app.py)", out)
+
+    def test_read_only_audit_badge_complete(self):
+        stream = io.StringIO()
+        renderer = TerminalRenderer(stream=stream)
+        from verification_gate import AuditEvidenceAssessment
+        audit = AuditEvidenceAssessment(
+            status="COMPLETE",
+            reason="ALL_CHECKS_CONCLUSIVE",
+            total_checks=3,
+            passed_count=2,
+            failed_count=1,
+            blocked_count=0,
+            inconclusive_count=0,
+        )
+        assessment = VerificationAssessment(
+            status="NOT_APPLICABLE",
+            reason="NO_MUTATION",
+            evidence_level="NONE",
+            requires_continuation=False,
+            mutation_detected=False,
+            changed_files=[],
+            audit_assessment=audit,
+        )
+        renderer.render_verification_summary(assessment)
+        out = stream.getvalue()
+        self.assertIn("[audit]", out)
+        self.assertIn("COMPLETE", out)
+        self.assertIn("3 checks", out)
+        self.assertIn("2 passed", out)
+        self.assertIn("1 failed", out)
+
+    def test_read_only_audit_badge_partial(self):
+        stream = io.StringIO()
+        renderer = TerminalRenderer(stream=stream)
+        from verification_gate import AuditEvidenceAssessment
+        audit = AuditEvidenceAssessment(
+            status="PARTIAL",
+            reason="SOME_CHECKS_BLOCKED",
+            total_checks=2,
+            passed_count=1,
+            failed_count=0,
+            blocked_count=1,
+            inconclusive_count=0,
+        )
+        assessment = VerificationAssessment(
+            status="NOT_APPLICABLE",
+            reason="NO_MUTATION",
+            evidence_level="NONE",
+            requires_continuation=False,
+            mutation_detected=False,
+            changed_files=[],
+            audit_assessment=audit,
+        )
+        renderer.render_verification_summary(assessment)
+        out = stream.getvalue()
+        self.assertIn("[audit]", out)
+        self.assertIn("PARTIAL", out)
+        self.assertIn("2 checks", out)
+        self.assertIn("1 passed", out)
+        self.assertIn("1 blocked", out)
 
 
 if __name__ == "__main__":

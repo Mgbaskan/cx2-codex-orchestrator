@@ -249,6 +249,45 @@ SKIP_PROMPT_PATTERNS = [
 EXIT_MASKING_PATTERN = re.compile(r"(\|\|\s*true\b|\|\|\s*exit\s+0\b|\|\|\s*:)", re.IGNORECASE)
 
 
+EXECUTABLE_NOT_FOUND_PATTERNS = [
+    re.compile(r"is not recognized\b", re.IGNORECASE),
+    re.compile(r"cannot find the path specified", re.IGNORECASE),
+    re.compile(r"command not found", re.IGNORECASE),
+    re.compile(r"no such file or directory", re.IGNORECASE),
+    re.compile(r"\bFileNotFoundError\b", re.IGNORECASE),
+    re.compile(r"\bENOENT\b", re.IGNORECASE),
+]
+
+SANDBOX_PERMISSION_PATTERNS = [
+    re.compile(r"access is denied", re.IGNORECASE),
+    re.compile(r"permission denied", re.IGNORECASE),
+    re.compile(r"\bEACCES\b", re.IGNORECASE),
+    re.compile(r"\bEPERM\b", re.IGNORECASE),
+    re.compile(r"operation not permitted", re.IGNORECASE),
+    re.compile(r"sandbox violation", re.IGNORECASE),
+    re.compile(r"child process creation denied", re.IGNORECASE),
+    re.compile(r"failed to spawn", re.IGNORECASE),
+]
+
+ENV_INIT_PATTERNS = [
+    re.compile(r"failed to initialize build cache", re.IGNORECASE),
+    re.compile(r"failed to create cache", re.IGNORECASE),
+    re.compile(r"unable to create temporary file", re.IGNORECASE),
+    re.compile(r"cannot create temp", re.IGNORECASE),
+]
+
+WORKSPACE_WRITE_PATTERNS = [
+    re.compile(r"read-only file system", re.IGNORECASE),
+    re.compile(r"\bEROFS\b", re.IGNORECASE),
+    re.compile(r"cannot write to read-only", re.IGNORECASE),
+]
+
+TIMEOUT_PATTERNS = [
+    re.compile(r"timed? ?out", re.IGNORECASE),
+    re.compile(r"timeout exceeded", re.IGNORECASE),
+]
+
+
 @dataclass
 class CommandExecutionSummary:
     command: str
@@ -265,8 +304,282 @@ class CommandExecutionSummary:
 
 
 @dataclass
+class CommandOutcome:
+    command: str
+    display_command: str
+    category: str
+    exit_code: int | None
+    duration_ms: int | None
+    sequence: int
+    outcome: str  # PASSED | FAILED | BLOCKED | INTERRUPTED | INCONCLUSIVE
+    reason_code: str  # EXIT_SUCCESS | TEST_FAILURE | LINT_FAILURE | BUILD_FAILURE | TYPECHECK_FAILURE |
+                      # SANDBOX_DENIED | PERMISSION_DENIED | EXECUTABLE_NOT_FOUND |
+                      # ENVIRONMENT_INIT_FAILED | TEMP_CACHE_UNAVAILABLE | TIMEOUT |
+                      # UNSUPPORTED_CAPABILITY | WORKSPACE_WRITE_REQUIRED | MASKED_EXIT_CODE |
+                      # NO_EXIT_CODE | TURN_INTERRUPTED | NON_ZERO_EXIT
+    output_snippet: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome:
+    """
+    Deterministically classify the outcome of a single command execution.
+    Distinguishes true project test/build failures from environment/sandbox blocks.
+    """
+    disp = summary.display_command or unwrap_display_command(summary.command)
+    primary_cat = summary.categories[0] if summary.categories else "OTHER"
+    snippet = summary.output_snippet or ""
+
+    if summary.exit_code == 0:
+        if summary.is_masked:
+            return CommandOutcome(
+                command=summary.command,
+                display_command=disp,
+                category=primary_cat,
+                exit_code=summary.exit_code,
+                duration_ms=summary.duration_ms,
+                sequence=summary.sequence,
+                outcome="INCONCLUSIVE",
+                reason_code="MASKED_EXIT_CODE",
+                output_snippet=snippet,
+            )
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category=primary_cat,
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="PASSED",
+            reason_code="EXIT_SUCCESS",
+            output_snippet=snippet,
+        )
+
+    if summary.exit_code is None:
+        if any(p.search(snippet) for p in TIMEOUT_PATTERNS):
+            return CommandOutcome(
+                command=summary.command,
+                display_command=disp,
+                category=primary_cat,
+                exit_code=None,
+                duration_ms=summary.duration_ms,
+                sequence=summary.sequence,
+                outcome="BLOCKED",
+                reason_code="TIMEOUT",
+                output_snippet=snippet,
+            )
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category=primary_cat,
+            exit_code=None,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="INCONCLUSIVE",
+            reason_code="NO_EXIT_CODE",
+            output_snippet=snippet,
+        )
+
+    # Exit code != 0: Check deterministic blocked signatures first
+    if any(p.search(snippet) for p in ENV_INIT_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category=primary_cat,
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="BLOCKED",
+            reason_code="ENVIRONMENT_INIT_FAILED",
+            output_snippet=snippet,
+        )
+
+    if any(p.search(snippet) for p in WORKSPACE_WRITE_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category=primary_cat,
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="BLOCKED",
+            reason_code="WORKSPACE_WRITE_REQUIRED",
+            output_snippet=snippet,
+        )
+
+    if any(p.search(snippet) for p in EXECUTABLE_NOT_FOUND_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category=primary_cat,
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="BLOCKED",
+            reason_code="EXECUTABLE_NOT_FOUND",
+            output_snippet=snippet,
+        )
+
+    if any(p.search(snippet) for p in SANDBOX_PERMISSION_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category=primary_cat,
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="BLOCKED",
+            reason_code="SANDBOX_DENIED",
+            output_snippet=snippet,
+        )
+
+    if any(p.search(snippet) for p in TIMEOUT_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category=primary_cat,
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="BLOCKED",
+            reason_code="TIMEOUT",
+            output_snippet=snippet,
+        )
+
+    # Actual test / check failure in project code
+    if "TEST" in summary.categories:
+        reason_code = "TEST_FAILURE"
+    elif "TYPECHECK" in summary.categories:
+        reason_code = "TYPECHECK_FAILURE"
+    elif "LINT" in summary.categories:
+        reason_code = "LINT_FAILURE"
+    elif "BUILD" in summary.categories:
+        reason_code = "BUILD_FAILURE"
+    else:
+        reason_code = "NON_ZERO_EXIT"
+
+    return CommandOutcome(
+        command=summary.command,
+        display_command=disp,
+        category=primary_cat,
+        exit_code=summary.exit_code,
+        duration_ms=summary.duration_ms,
+        sequence=summary.sequence,
+        outcome="FAILED",
+        reason_code=reason_code,
+        output_snippet=snippet,
+    )
+
+
+@dataclass
+class AuditEvidenceAssessment:
+    status: str  # COMPLETE | PARTIAL | UNVERIFIED | INTERRUPTED
+    reason: str
+    total_checks: int
+    passed_count: int
+    failed_count: int
+    blocked_count: int
+    inconclusive_count: int
+    command_outcomes: list[dict[str, Any]] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+def assess_read_only_audit(
+    *,
+    command_executions: list[CommandExecutionSummary],
+    is_interrupted: bool = False,
+) -> AuditEvidenceAssessment:
+    """
+    Assess verification evidence completeness for read-only audit turns.
+
+    Conclusive outcomes (PASSED, FAILED) count as conclusive evidence.
+    Non-conclusive outcomes (BLOCKED, INCONCLUSIVE) degrade completeness to PARTIAL or UNVERIFIED.
+    """
+    if is_interrupted:
+        return AuditEvidenceAssessment(
+            status="INTERRUPTED",
+            reason="TURN_INTERRUPTED",
+            total_checks=0,
+            passed_count=0,
+            failed_count=0,
+            blocked_count=0,
+            inconclusive_count=0,
+            command_outcomes=[],
+        )
+
+    # Filter for verification-relevant commands
+    relevant_cmds = [
+        cmd for cmd in command_executions
+        if any(c in {"TEST", "TYPECHECK", "LINT", "BUILD"} for c in cmd.categories)
+    ]
+
+    outcomes = [classify_command_outcome(cmd) for cmd in relevant_cmds]
+    outcome_dicts = [o.to_dict() for o in outcomes]
+
+    passed_count = sum(1 for o in outcomes if o.outcome == "PASSED")
+    failed_count = sum(1 for o in outcomes if o.outcome == "FAILED")
+    blocked_count = sum(1 for o in outcomes if o.outcome == "BLOCKED")
+    inconclusive_count = sum(1 for o in outcomes if o.outcome == "INCONCLUSIVE")
+    total_checks = len(outcomes)
+
+    conclusive_count = passed_count + failed_count
+    non_conclusive_count = blocked_count + inconclusive_count
+
+    if total_checks == 0:
+        return AuditEvidenceAssessment(
+            status="UNVERIFIED",
+            reason="NO_CHECKS_ATTEMPTED",
+            total_checks=0,
+            passed_count=0,
+            failed_count=0,
+            blocked_count=0,
+            inconclusive_count=0,
+            command_outcomes=[],
+        )
+
+    if conclusive_count == 0:
+        return AuditEvidenceAssessment(
+            status="UNVERIFIED",
+            reason="ALL_CHECKS_BLOCKED",
+            total_checks=total_checks,
+            passed_count=passed_count,
+            failed_count=failed_count,
+            blocked_count=blocked_count,
+            inconclusive_count=inconclusive_count,
+            command_outcomes=outcome_dicts,
+        )
+
+    if non_conclusive_count > 0:
+        return AuditEvidenceAssessment(
+            status="PARTIAL",
+            reason="SOME_CHECKS_BLOCKED",
+            total_checks=total_checks,
+            passed_count=passed_count,
+            failed_count=failed_count,
+            blocked_count=blocked_count,
+            inconclusive_count=inconclusive_count,
+            command_outcomes=outcome_dicts,
+        )
+
+    return AuditEvidenceAssessment(
+        status="COMPLETE",
+        reason="ALL_CHECKS_CONCLUSIVE",
+        total_checks=total_checks,
+        passed_count=passed_count,
+        failed_count=failed_count,
+        blocked_count=blocked_count,
+        inconclusive_count=inconclusive_count,
+        command_outcomes=outcome_dicts,
+    )
+
+
+@dataclass
 class VerificationAssessment:
-    status: str  # VERIFIED | PARTIALLY_VERIFIED | UNVERIFIED | NOT_APPLICABLE | BLOCKED | INTERRUPTED
+    status: str  # VERIFIED | PARTIALLY_VERIFIED | FAILED | UNVERIFIED | NOT_APPLICABLE | BLOCKED | INTERRUPTED
     reason: str
     evidence_level: str  # NONE | WEAK | RELEVANT | STRONG
     requires_continuation: bool
@@ -276,6 +589,8 @@ class VerificationAssessment:
     dominant_category: str = "OTHER"
     executed_commands: list[dict[str, Any]] = field(default_factory=list)
     valid_evidence_commands: list[dict[str, Any]] = field(default_factory=list)
+    command_outcomes: list[dict[str, Any]] = field(default_factory=list)
+    audit_assessment: AuditEvidenceAssessment | None = None
     last_mutation_sequence: int = 0
     turns_evaluated: int = 1
 
@@ -721,6 +1036,9 @@ def assess_turn(
 
     executed_cmd_dicts = [cmd.to_dict() for cmd in command_executions]
 
+    all_outcomes = [classify_command_outcome(cmd) for cmd in command_executions]
+    all_outcome_dicts = [o.to_dict() for o in all_outcomes]
+
     if user_skip:
         return VerificationAssessment(
             status="UNVERIFIED",
@@ -733,11 +1051,17 @@ def assess_turn(
             dominant_category=dominant_cat,
             executed_commands=executed_cmd_dicts,
             valid_evidence_commands=[],
+            command_outcomes=all_outcome_dicts,
+            audit_assessment=None,
             last_mutation_sequence=last_mutation_seq,
             turns_evaluated=2 if is_continuation else 1,
         )
 
     if not mutation_detected:
+        audit = assess_read_only_audit(
+            command_executions=command_executions,
+            is_interrupted=False,
+        )
         return VerificationAssessment(
             status="NOT_APPLICABLE",
             reason="NO_MUTATION",
@@ -749,6 +1073,8 @@ def assess_turn(
             dominant_category="OTHER",
             executed_commands=executed_cmd_dicts,
             valid_evidence_commands=[],
+            command_outcomes=all_outcome_dicts,
+            audit_assessment=audit,
             last_mutation_sequence=last_mutation_seq,
             turns_evaluated=2 if is_continuation else 1,
         )
@@ -765,6 +1091,8 @@ def assess_turn(
             dominant_category="DOCS_ONLY",
             executed_commands=executed_cmd_dicts,
             valid_evidence_commands=[],
+            command_outcomes=all_outcome_dicts,
+            audit_assessment=None,
             last_mutation_sequence=last_mutation_seq,
             turns_evaluated=2 if is_continuation else 1,
         )
@@ -772,23 +1100,26 @@ def assess_turn(
     # Valid evidence commands must occur strictly after the last mutation sequence
     post_mutation_cmds = [cmd for cmd in command_executions if cmd.sequence > last_mutation_seq]
     valid_evidence_dicts = [cmd.to_dict() for cmd in post_mutation_cmds]
+    post_outcomes = [classify_command_outcome(cmd) for cmd in post_mutation_cmds]
 
     has_strong_test = any(
-        "TEST" in cmd.categories and cmd.exit_code == 0 and not cmd.is_masked
-        for cmd in post_mutation_cmds
+        o.category == "TEST" and o.outcome == "PASSED"
+        for o in post_outcomes
     )
 
     has_relevant_typecheck_or_build = any(
-        ("TYPECHECK" in cmd.categories or "BUILD" in cmd.categories)
-        and cmd.exit_code == 0
-        and not cmd.is_masked
-        for cmd in post_mutation_cmds
+        o.category in {"TYPECHECK", "BUILD"} and o.outcome == "PASSED"
+        for o in post_outcomes
     )
 
     has_failed_cmd = any(
-        ("TEST" in cmd.categories or "TYPECHECK" in cmd.categories or "BUILD" in cmd.categories)
-        and (cmd.exit_code is not None and cmd.exit_code != 0)
-        for cmd in post_mutation_cmds
+        o.outcome == "FAILED"
+        for o in post_outcomes
+    )
+
+    has_blocked_cmd = any(
+        o.outcome == "BLOCKED"
+        for o in post_outcomes
     )
 
     if has_strong_test:
@@ -803,6 +1134,8 @@ def assess_turn(
             dominant_category=dominant_cat,
             executed_commands=executed_cmd_dicts,
             valid_evidence_commands=valid_evidence_dicts,
+            command_outcomes=all_outcome_dicts,
+            audit_assessment=None,
             last_mutation_sequence=last_mutation_seq,
             turns_evaluated=2 if is_continuation else 1,
         )
@@ -820,6 +1153,8 @@ def assess_turn(
                 dominant_category=dominant_cat,
                 executed_commands=executed_cmd_dicts,
                 valid_evidence_commands=valid_evidence_dicts,
+                command_outcomes=all_outcome_dicts,
+                audit_assessment=None,
                 last_mutation_sequence=last_mutation_seq,
                 turns_evaluated=2 if is_continuation else 1,
             )
@@ -835,6 +1170,8 @@ def assess_turn(
                 dominant_category=dominant_cat,
                 executed_commands=executed_cmd_dicts,
                 valid_evidence_commands=valid_evidence_dicts,
+                command_outcomes=all_outcome_dicts,
+                audit_assessment=None,
                 last_mutation_sequence=last_mutation_seq,
                 turns_evaluated=2,
             )
@@ -843,7 +1180,7 @@ def assess_turn(
     if is_continuation:
         if has_failed_cmd:
             return VerificationAssessment(
-                status="BLOCKED",
+                status="FAILED",
                 reason="TEST_FAILED_AFTER_CONTINUATION",
                 evidence_level="WEAK",
                 requires_continuation=False,
@@ -853,6 +1190,25 @@ def assess_turn(
                 dominant_category=dominant_cat,
                 executed_commands=executed_cmd_dicts,
                 valid_evidence_commands=valid_evidence_dicts,
+                command_outcomes=all_outcome_dicts,
+                audit_assessment=None,
+                last_mutation_sequence=last_mutation_seq,
+                turns_evaluated=2,
+            )
+        if has_blocked_cmd:
+            return VerificationAssessment(
+                status="BLOCKED",
+                reason="VERIFICATION_BLOCKED_AFTER_CONTINUATION",
+                evidence_level="NONE",
+                requires_continuation=False,
+                mutation_detected=True,
+                changed_files=deduped_files,
+                file_categories=sorted(file_cats),
+                dominant_category=dominant_cat,
+                executed_commands=executed_cmd_dicts,
+                valid_evidence_commands=valid_evidence_dicts,
+                command_outcomes=all_outcome_dicts,
+                audit_assessment=None,
                 last_mutation_sequence=last_mutation_seq,
                 turns_evaluated=2,
             )
@@ -867,6 +1223,8 @@ def assess_turn(
             dominant_category=dominant_cat,
             executed_commands=executed_cmd_dicts,
             valid_evidence_commands=valid_evidence_dicts,
+            command_outcomes=all_outcome_dicts,
+            audit_assessment=None,
             last_mutation_sequence=last_mutation_seq,
             turns_evaluated=2,
         )
@@ -884,6 +1242,8 @@ def assess_turn(
             dominant_category=dominant_cat,
             executed_commands=executed_cmd_dicts,
             valid_evidence_commands=valid_evidence_dicts,
+            command_outcomes=all_outcome_dicts,
+            audit_assessment=None,
             last_mutation_sequence=last_mutation_seq,
             turns_evaluated=1,
         )
@@ -901,6 +1261,8 @@ def assess_turn(
         dominant_category=dominant_cat,
         executed_commands=executed_cmd_dicts,
         valid_evidence_commands=valid_evidence_dicts,
+        command_outcomes=all_outcome_dicts,
+        audit_assessment=None,
         last_mutation_sequence=last_mutation_seq,
         turns_evaluated=1,
     )

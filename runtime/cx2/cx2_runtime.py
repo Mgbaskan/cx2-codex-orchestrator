@@ -145,6 +145,46 @@ def resolve_turn_timeout(
     return max(MIN_TURN_TIMEOUT_SEC, min(float(raw_val), MAX_TURN_TIMEOUT_SEC))
 
 
+BROAD_AUDIT_DEVELOPER_INSTRUCTIONS = """
+Whole-project audit mode is active for this read-only task.
+
+Execution and budget guidelines:
+1. Prioritize critical risk surfaces: authentication, authorization, payment/billing, data consistency, security boundaries, and production configuration.
+2. Avoid exhaustive traversal: Do not attempt to sequentially inspect every file in the repository. Use targeted sampling and focused queries.
+3. Run verification early: Execute the most relevant test, typecheck, or lint commands during the middle phase of the audit rather than delaying them to the end.
+4. Conclude with sufficient evidence: When key findings and evidence are established, stop further exploratory traversal and reserve sufficient budget to synthesize the final structured report.
+5. Disclose limitations clearly: Explicitly state unverified, uninspected, or blocked areas rather than attempting unbounded traversal.
+""".strip()
+
+
+def is_broad_project_audit(route: dict[str, Any] | None) -> bool:
+    """
+    Check whether the route contains a composite broad project audit signal.
+    """
+    if not isinstance(route, dict):
+        return False
+
+    scope_signals = route.get("risk_signals", {}).get("scope", [])
+    if "broad-project-audit" in scope_signals:
+        return True
+
+    reasons = route.get("reasons", [])
+    if any("broad-project-audit" in str(r) for r in reasons):
+        return True
+
+    return False
+
+
+def developer_instructions_for_route(route: dict[str, Any] | None) -> str | None:
+    """
+    Resolve process-local developer instructions for the given base route.
+    Returns None for routine/standard/focused tasks.
+    """
+    if is_broad_project_audit(route):
+        return BROAD_AUDIT_DEVELOPER_INSTRUCTIONS
+    return None
+
+
 class CX2RuntimeError(
     RuntimeError
 ):
@@ -854,6 +894,7 @@ class CX2Runtime:
         )
 
         first_attempt = attempts[0]
+        dev_instructions = developer_instructions_for_route(base_route)
 
         acquired = acquire_thread(
             self.client,
@@ -876,6 +917,8 @@ class CX2Runtime:
                 candidate_memory_thread,
             reusable=
                 is_reusable,
+            developer_instructions=
+                dev_instructions,
         )
 
         thread_id = str(
@@ -1323,6 +1366,7 @@ class CX2Runtime:
 
 
 __all__ = [
+    "BROAD_AUDIT_DEVELOPER_INSTRUCTIONS",
     "CX2ExecutionResult",
     "CX2Runtime",
     "CX2RuntimeError",
@@ -1333,6 +1377,8 @@ __all__ = [
     "ProductionResultView",
     "ProductionStatusView",
     "RUNTIME_VERSION",
+    "developer_instructions_for_route",
     "initialize_params",
+    "is_broad_project_audit",
     "resolve_turn_timeout",
 ]

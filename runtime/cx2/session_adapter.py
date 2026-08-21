@@ -270,6 +270,7 @@ CX2_WEB_SEARCH_MODES = {
 
 def lean_config_with_web(
     web_search_mode: str,
+    developer_instructions: str | None = None,
 ) -> dict[str, Any]:
 
     if web_search_mode not in CX2_WEB_SEARCH_MODES:
@@ -288,6 +289,11 @@ def lean_config_with_web(
         "web_search"
     ] = web_search_mode
 
+    if developer_instructions:
+        config[
+            "developer_instructions"
+        ] = str(developer_instructions)
+
     return config
 
 
@@ -297,6 +303,7 @@ def thread_start_params(
     model: str,
     permissions: str,
     web_search_mode: str = "disabled",
+    developer_instructions: str | None = None,
 ) -> dict[str, Any]:
 
     root = root.resolve()
@@ -323,7 +330,9 @@ def thread_start_params(
 
         "config":
             lean_config_with_web(
-                web_search_mode
+                web_search_mode,
+                developer_instructions=
+                    developer_instructions,
             ),
     }
 
@@ -335,6 +344,7 @@ def thread_resume_params(
     model: str,
     permissions: str,
     web_search_mode: str = "disabled",
+    developer_instructions: str | None = None,
 ) -> dict[str, Any]:
 
     root = root.resolve()
@@ -361,7 +371,9 @@ def thread_resume_params(
 
         "config":
             lean_config_with_web(
-                web_search_mode
+                web_search_mode,
+                developer_instructions=
+                    developer_instructions,
             ),
 
         # We do not need full historical turn payload here.
@@ -507,6 +519,7 @@ def acquire_thread(
     web_search_mode: str = "disabled",
     active_memory_thread_id: str | None = None,
     reusable: bool = True,
+    developer_instructions: str | None = None,
 ) -> dict[str, Any]:
 
     effective_start_web_mode = (
@@ -563,6 +576,8 @@ def acquire_thread(
                             permissions,
                         web_search_mode=
                             effective_resume_web_mode,
+                        developer_instructions=
+                            developer_instructions,
                     ),
                     timeout=30.0,
                 )
@@ -627,6 +642,8 @@ def acquire_thread(
                     permissions,
                 web_search_mode=
                     effective_start_web_mode,
+                developer_instructions=
+                    developer_instructions,
             ),
             timeout=30.0,
         )
@@ -681,6 +698,8 @@ def acquire_thread(
                         permissions,
                     web_search_mode=
                         effective_resume_web_mode,
+                    developer_instructions=
+                        developer_instructions,
                 ),
                 timeout=30.0,
             )
@@ -727,6 +746,8 @@ def acquire_thread(
                 permissions,
             web_search_mode=
                 effective_start_web_mode,
+            developer_instructions=
+                developer_instructions,
         ),
         timeout=30.0,
     )

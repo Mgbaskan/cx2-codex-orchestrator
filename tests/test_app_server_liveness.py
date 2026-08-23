@@ -4,6 +4,8 @@ import io
 from pathlib import Path
 import sqlite3
 import sys
+import threading
+import time
 from typing import Any
 import unittest
 from unittest.mock import MagicMock, patch
@@ -41,10 +43,12 @@ class FakeLivenessClient:
         self,
         *,
         process: Any = None,
+        dispatcher_thread: Any = None,
         notifications: list[dict[str, Any]] | None = None,
         server_requests: list[dict[str, Any]] | None = None,
     ) -> None:
         self.process = process
+        self._dispatcher_thread = dispatcher_thread
         self.notifications = list(notifications or [])
         self.server_requests = list(server_requests or [])
         self.interrupt_calls: list[tuple[str, str]] = []
@@ -156,12 +160,91 @@ class TestAppServerLiveness(unittest.TestCase):
         client = FakeLivenessClient(process=fake_proc, notifications=[completion_event])
         runner = StreamingTurnRunner(client, live=False, poll_interval=0.005)
 
-        # Must return completed result, NOT raise AppServerProtocolError
         res = runner.wait_for_turn(self.result, timeout=300.0)
         self.assertEqual(res.status, "completed")
 
     # -------------------------------------------------------------
-    # 5. Missing process handle is backward-safe
+    # 5. In-flight final event race: process dead before dispatcher drains pipe
+    # -------------------------------------------------------------
+    def test_final_event_in_flight_when_process_exits_wins(self) -> None:
+        """If process exited but dispatcher thread has buffered turn/completed, final event must win."""
+        fake_proc = FakeProcess(exit_codes=[0])  # process has exited
+
+        completion_event = {
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "id": "turn-test-1",
+                    "status": "completed",
+                }
+            }
+        }
+
+        # Mock a dispatcher thread that delivers the completion event upon join()
+        client = FakeLivenessClient(process=fake_proc)
+
+        class MockInFlightDispatcher:
+            def __init__(self, target_client: FakeLivenessClient, event: dict):
+                self.target_client = target_client
+                self.event = event
+                self.alive = True
+
+            def is_alive(self) -> bool:
+                return self.alive
+
+            def join(self, timeout: float | None = None) -> None:
+                # Simulate reading final bytes from pipe and enqueuing
+                self.target_client.notifications.append(self.event)
+                self.alive = False
+
+        dispatcher = MockInFlightDispatcher(client, completion_event)
+        client._dispatcher_thread = dispatcher
+        runner = StreamingTurnRunner(client, live=False, poll_interval=0.005)
+
+        # Must NOT raise AppServerProtocolError; terminal completion must win!
+        res = runner.wait_for_turn(self.result, timeout=10.0)
+        self.assertEqual(res.status, "completed")
+
+    # -------------------------------------------------------------
+    # 6. Process exits with code 0 without turn/completed -> still fails
+    # -------------------------------------------------------------
+    def test_process_exits_with_zero_but_no_final_event_fails(self) -> None:
+        """Process exit code 0 without turn/completed must still raise AppServerProtocolError."""
+        fake_proc = FakeProcess(exit_codes=[0])
+        client = FakeLivenessClient(process=fake_proc)
+        runner = StreamingTurnRunner(client, live=False, poll_interval=0.005)
+
+        with self.assertRaises(AppServerProtocolError) as ctx:
+            runner.wait_for_turn(self.result, timeout=10.0)
+
+        self.assertIn("exit code: 0", str(ctx.exception))
+        self.assertEqual(self.result.status, "failed")
+
+    # -------------------------------------------------------------
+    # 7. Dispatcher thread died while process still running
+    # -------------------------------------------------------------
+    def test_dispatcher_thread_died_while_process_alive(self) -> None:
+        """If dispatcher thread terminates while process is alive and turn is inProgress, fail immediately."""
+        fake_proc = FakeProcess(exit_codes=[None])  # process still alive
+        client = FakeLivenessClient(process=fake_proc)
+
+        class DeadDispatcher:
+            def is_alive(self) -> bool:
+                return False
+            def join(self, timeout: float | None = None) -> None:
+                pass
+
+        client._dispatcher_thread = DeadDispatcher()
+        runner = StreamingTurnRunner(client, live=False, poll_interval=0.005)
+
+        with self.assertRaises(AppServerProtocolError) as ctx:
+            runner.wait_for_turn(self.result, timeout=10.0)
+
+        self.assertIn("dispatcher thread terminated unexpectedly", str(ctx.exception))
+        self.assertEqual(self.result.status, "failed")
+
+    # -------------------------------------------------------------
+    # 8. Missing process handle is backward-safe
     # -------------------------------------------------------------
     def test_missing_process_handle_backward_safe(self) -> None:
         """Test client without process attribute completes normally without AttributeError."""
@@ -181,7 +264,7 @@ class TestAppServerLiveness(unittest.TestCase):
         self.assertEqual(res.status, "completed")
 
     # -------------------------------------------------------------
-    # 6. Poll probe failure handled safely
+    # 9. Poll probe failure handled safely
     # -------------------------------------------------------------
     def test_poll_probe_failure_handled_safely(self) -> None:
         """If process.poll() raises an unexpected exception, it is caught safely and turn completes."""
@@ -204,7 +287,7 @@ class TestAppServerLiveness(unittest.TestCase):
         self.assertEqual(res.status, "completed")
 
     # -------------------------------------------------------------
-    # 7. Partial command ledger preserved on death
+    # 10. Partial command ledger preserved on death
     # -------------------------------------------------------------
     def test_partial_command_ledger_preserved_on_death(self) -> None:
         """Commands completed before App Server death remain in TurnRunResult."""
@@ -230,8 +313,6 @@ class TestAppServerLiveness(unittest.TestCase):
                 }
             }
         }
-        # First iteration: command events delivered, process alive (None)
-        # Second iteration: process dead (1)
         fake_proc = FakeProcess(exit_codes=[None, 1])
         client = FakeLivenessClient(process=fake_proc, notifications=[cmd_started, cmd_completed])
         runner = StreamingTurnRunner(client, live=False, poll_interval=0.005)
@@ -244,7 +325,7 @@ class TestAppServerLiveness(unittest.TestCase):
         self.assertEqual(self.result.status, "failed")
 
     # -------------------------------------------------------------
-    # 8. Interactive Phase 1 recovery after detected death
+    # 11. Interactive Phase 1 recovery after detected death
     # -------------------------------------------------------------
     def test_interactive_phase1_recovery_after_detected_death(self) -> None:
         """Interactive loop catches death as AppServerProtocolError, closes runtime, and recovers on prompt 2."""
@@ -292,7 +373,7 @@ class TestAppServerLiveness(unittest.TestCase):
         self.assertNotIn("Traceback (most recent call last)", output)
 
     # -------------------------------------------------------------
-    # 9. One-shot death returns nonzero cleanly
+    # 12. One-shot death returns nonzero cleanly
     # -------------------------------------------------------------
     def test_one_shot_death_returns_nonzero_cleanly(self) -> None:
         """One-shot execution on App Server death returns exit code 1 with clean stderr message."""

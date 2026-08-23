@@ -1154,13 +1154,22 @@ class StreamingTurnRunner:
                 ):
                     return result
 
-                # Check process liveness: if the App Server subprocess has terminated
-                # before reaching a terminal turn status, fail immediately.
+                # Check process and dispatcher liveness:
+                # If the subprocess terminated or the dispatcher thread exited while
+                # the turn is still inProgress, reconcile any in-flight events before
+                # declaring failure.
                 process = getattr(
                     self.client,
                     "process",
                     None,
                 )
+                dispatcher = getattr(
+                    self.client,
+                    "_dispatcher_thread",
+                    None,
+                )
+
+                poll_code = None
                 if process is not None:
                     try:
                         poll_code = (
@@ -1169,20 +1178,92 @@ class StreamingTurnRunner:
                     except Exception:
                         poll_code = None
 
+                dispatcher_alive = (
+                    getattr(
+                        dispatcher,
+                        "is_alive",
+                        lambda: True,
+                    )()
+                    if dispatcher is not None
+                    else True
+                )
+
+                if (
+                    poll_code is not None
+                    or (
+                        dispatcher is not None
+                        and not dispatcher_alive
+                    )
+                ):
+                    # If the process has exited, give the dispatcher thread a bounded
+                    # window to consume any remaining EOF / buffered lines from stdout.
                     if (
-                        poll_code
-                        is not None
+                        dispatcher is not None
+                        and getattr(
+                            dispatcher,
+                            "is_alive",
+                            lambda: False,
+                        )()
                     ):
-                        if (
-                            result.status
-                            not in FINAL_STATUSES
-                        ):
-                            result.status = (
-                                "failed"
+                        try:
+                            dispatcher.join(
+                                timeout=1.0
                             )
+                        except Exception:
+                            pass
+
+                    # Perform final drain of any events delivered right up to EOF
+                    for request in (
+                        self.client
+                        .drain_server_requests()
+                    ):
+                        self._handle_server_request(
+                            result,
+                            request,
+                        )
+
+                    for notification in (
+                        self.client
+                        .drain_notifications()
+                    ):
+                        self._handle_notification(
+                            result,
+                            notification,
+                        )
+
+                    unknown = (
+                        self.client
+                        .drain_unknown()
+                    )
+                    if unknown:
+                        result.unknown_messages.extend(
+                            unknown
+                        )
+
+                    # Terminal completion takes precedence if delivered in final drain
+                    if (
+                        result.status
+                        in FINAL_STATUSES
+                    ):
+                        return result
+
+                    if (
+                        result.status
+                        not in FINAL_STATUSES
+                    ):
+                        result.status = (
+                            "failed"
+                        )
+
+                    if poll_code is not None:
                         raise AppServerProtocolError(
                             "Codex App Server process terminated unexpectedly "
                             f"(exit code: {poll_code}, turn: {result.turn_id})."
+                        )
+                    else:
+                        raise AppServerProtocolError(
+                            "Codex App Server dispatcher thread terminated unexpectedly "
+                            f"(turn: {result.turn_id})."
                         )
 
                 if (

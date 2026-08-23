@@ -18,6 +18,8 @@ if str(PRODUCTION_SRC) not in sys.path:
 
 import cx as production_cx
 
+from codex_compat import resolve_sandbox_compatibility
+
 
 EXPECTED_ROUTER_VERSION = "1.2.2"
 
@@ -132,9 +134,19 @@ def build_route(
             "Sandbox route yok."
         )
 
+    compat_decision = (
+        resolve_sandbox_compatibility(
+            sandbox
+        )
+    )
+
+    effective_sandbox = (
+        compat_decision.effective_sandbox
+    )
+
     permissions = (
         permission_profile_for_sandbox(
-            sandbox
+            effective_sandbox
         )
     )
 
@@ -192,6 +204,21 @@ def build_route(
         # telemetry / diagnostics.
         "sandbox":
             sandbox,
+
+        "requested_sandbox":
+            sandbox,
+
+        "effective_sandbox":
+            effective_sandbox,
+
+        "sandbox_compatibility_mode":
+            compat_decision.compatibility_mode,
+
+        "sandbox_degraded":
+            compat_decision.degraded,
+
+        "sandbox_compatibility_reason":
+            compat_decision.reason,
 
         # App Server execution profile.
         "permissions":

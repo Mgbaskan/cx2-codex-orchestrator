@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import sqlite3
 import subprocess
+import sys
 from typing import Any
 
 
@@ -27,6 +28,7 @@ REASON_UNVALIDATED_VERSION = "UNVALIDATED_CODEX_VERSION"
 REASON_STATE_DB_MISSING = "STATE_DB_MISSING"
 REASON_STATE_SCHEMA_UNVALIDATED = "STATE_SCHEMA_UNVALIDATED"
 REASON_PACKAGE_VERSION_MISMATCH = "PACKAGE_VERSION_MISMATCH"
+REASON_WINDOWS_WORKSPACE_WRITE_DEGRADED = "WINDOWS_CODEX_01444_WORKSPACE_WRITE_DEGRADED"
 
 
 # ==============================================================================
@@ -423,6 +425,90 @@ def evaluate_native_delete_safety(
 
 
 # ==============================================================================
+# 6B. SANDBOX COMPATIBILITY EVALUATION
+# ==============================================================================
+
+@dataclass(frozen=True)
+class SandboxCompatibilityDecision:
+    requested_sandbox: str
+    effective_sandbox: str
+    compatibility_mode: str | None = None
+    degraded: bool = False
+    reason: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "requested_sandbox": self.requested_sandbox,
+            "effective_sandbox": self.effective_sandbox,
+            "compatibility_mode": self.compatibility_mode,
+            "degraded": self.degraded,
+            "reason": self.reason,
+        }
+
+
+def resolve_sandbox_compatibility(
+    requested_sandbox: str,
+    *,
+    platform: str | None = None,
+    codex_version: str | None = None,
+    executable: Path | str | None = None,
+) -> SandboxCompatibilityDecision:
+    """
+    Central authoritative sandbox compatibility resolver.
+
+    Determines effective sandbox execution capability based on platform and Codex CLI version.
+
+    Rule:
+      Windows (win32) + Codex CLI 0.144.4 + requested "workspace-write"
+      -> effective "read-only", degraded=True, reason=WINDOWS_CODEX_01444_WORKSPACE_WRITE_DEGRADED.
+
+    All other platforms/versions/modes remain requested_sandbox.
+    """
+    try:
+        plat = (platform if platform is not None else sys.platform).lower()
+        if codex_version is None:
+            raw_ver, _ = detect_codex_binary_version(executable)
+        else:
+            raw_ver = codex_version
+
+        parsed_ver = parse_codex_version(raw_ver)
+        validated_ver = parse_codex_version(VALIDATED_CODEX_VERSION)
+
+        if (
+            plat.startswith("win")
+            and parsed_ver is not None
+            and validated_ver is not None
+            and parsed_ver.tuple() == validated_ver.tuple()
+            and requested_sandbox == "workspace-write"
+        ):
+            return SandboxCompatibilityDecision(
+                requested_sandbox=requested_sandbox,
+                effective_sandbox="read-only",
+                compatibility_mode="windows_workspace_write_fallback",
+                degraded=True,
+                reason=REASON_WINDOWS_WORKSPACE_WRITE_DEGRADED,
+            )
+
+        return SandboxCompatibilityDecision(
+            requested_sandbox=requested_sandbox,
+            effective_sandbox=requested_sandbox,
+            compatibility_mode=None,
+            degraded=False,
+            reason=None,
+        )
+    except Exception as exc:
+        is_win = (platform or sys.platform).lower().startswith("win")
+        eff = "read-only" if (is_win and requested_sandbox == "workspace-write") else requested_sandbox
+        return SandboxCompatibilityDecision(
+            requested_sandbox=requested_sandbox,
+            effective_sandbox=eff,
+            compatibility_mode="conservative_fallback" if eff != requested_sandbox else None,
+            degraded=eff != requested_sandbox,
+            reason=f"RESOLVER_ERROR: {type(exc).__name__}",
+        )
+
+
+# ==============================================================================
 # 7. COMPREHENSIVE COMPATIBILITY ASSESSMENT
 # ==============================================================================
 
@@ -579,6 +665,15 @@ def assess_codex_compatibility(
         elif del_safety.get("reason") == REASON_UNVALIDATED_VERSION:
             warnings.append("Native thread deletion safely degraded (unvalidated Codex CLI version)")
 
+    ws_compat = resolve_sandbox_compatibility("workspace-write", executable=executable, platform=sys.platform)
+    if ws_compat.degraded:
+        capabilities["windows_workspace_write"] = CompatibilityState.SUPPORTED_WITH_DEGRADATION
+        warnings.append(
+            "Windows workspace-write sandbox safely degraded (upstream Codex 0.144.4 defect; read-only compatibility active)"
+        )
+    else:
+        capabilities["windows_workspace_write"] = core_state
+
     # 5. Overall state resolution
     is_fatal = core_state == CompatibilityState.INCOMPATIBLE
     if is_fatal:
@@ -631,6 +726,10 @@ def generate_doctor_compatibility_summary(
     if report.native_delete_safety.get("reason") == REASON_VERSION_UNAVAILABLE:
         delete_status = "UNAVAILABLE"
 
+    ws_cap = report.capabilities.get("windows_workspace_write", report.core_state)
+    ws_status = "DEGRADED" if ws_cap == CompatibilityState.SUPPORTED_WITH_DEGRADATION else str(ws_cap)
+    ws_reason = REASON_WINDOWS_WORKSPACE_WRITE_DEGRADED if ws_status == "DEGRADED" else None
+
     return {
         "validated_baseline": report.validated_version,
         "codex_package": report.package_versions.get(VALIDATED_CODEX_PACKAGE) or "NOT_INSTALLED",
@@ -642,6 +741,8 @@ def generate_doctor_compatibility_summary(
         "overall_compatibility": str(report.overall_state),
         "native_delete": delete_status,
         "native_delete_reason": report.native_delete_safety.get("reason"),
+        "windows_workspace_write": ws_status,
+        "windows_workspace_write_reason": ws_reason,
         "is_fatal": report.is_fatal,
         "warnings": report.warnings,
         "issues": report.issues,

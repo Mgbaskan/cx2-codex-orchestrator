@@ -1195,6 +1195,8 @@ class TerminalRenderer:
         model: str,
         effort: str | None = None,
         sandbox: str | None = None,
+        effective_sandbox: str | None = None,
+        sandbox_compatibility_mode: str | None = None,
         quota: dict[str, Any] | None = None,
     ) -> None:
         """
@@ -1225,6 +1227,10 @@ class TerminalRenderer:
 
         line_text = f"[cx] {' · '.join(parts)}"
         self._line(self._dim(line_text))
+
+        if sandbox_compatibility_mode or (effective_sandbox and sandbox and effective_sandbox != sandbox):
+            compat_notice = "[cx] Windows sandbox: güvenli read-only uyumluluk modu etkin; yazma işlemleri ayrıca onay isteyebilir."
+            self._line(self._dim(compat_notice))
 
     def render_context_summary(
         self,

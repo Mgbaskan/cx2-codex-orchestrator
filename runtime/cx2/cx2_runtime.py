@@ -1042,6 +1042,12 @@ class CX2Runtime:
                         )
                         or "full"
                     ),
+                    effective_sandbox=attempt_route.get(
+                        "effective_sandbox"
+                    ),
+                    sandbox_compatibility_mode=attempt_route.get(
+                        "sandbox_compatibility_mode"
+                    ),
                     quota=quota,
                 )
 

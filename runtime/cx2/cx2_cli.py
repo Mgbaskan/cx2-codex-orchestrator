@@ -64,8 +64,15 @@ from budget_adapter import (
     read_live_quota,
 )
 
+import traceback
+
+from client import (
+    AppServerProtocolError,
+)
+
 from cx2_runtime import (
     CX2Runtime,
+    CX2RuntimeError,
     EXPECTED_ROUTER_VERSION,
     RUNTIME_VERSION,
 )
@@ -807,6 +814,45 @@ def handle_interactive_command(
     return False, False
 
 
+def _write_crash_log(
+    exc: BaseException | None = None,
+) -> None:
+    crash_path = (
+        CX2_HOME
+        / "cx2-cli-last-crash.txt"
+    )
+    try:
+        crash_path.parent.mkdir(
+            parents=True,
+            exist_ok=True,
+        )
+        if exc is not None:
+            tb_text = "".join(
+                traceback.format_exception(
+                    type(exc),
+                    exc,
+                    exc.__traceback__,
+                )
+            )
+        else:
+            tb_text = traceback.format_exc()
+        crash_path.write_text(
+            tb_text,
+            encoding="utf-8",
+        )
+    except Exception:
+        pass
+
+
+def _safe_write_crash_log(
+    exc: BaseException | None = None,
+) -> None:
+    try:
+        _write_crash_log(exc)
+    except Exception:
+        pass
+
+
 def execute_one_shot(
     prompt: str,
     *,
@@ -851,9 +897,35 @@ def execute_one_shot(
         print("\n[cx] Tur durduruldu.", file=sys.stderr)
         return 130
 
+    except TimeoutError:
+        print("[cx] Tur zaman aşımına uğradı.", file=sys.stderr)
+        return 1
+
+    except AppServerProtocolError as exc:
+        _safe_write_crash_log(exc)
+        print(f"[cx] Codex App Server bağlantı hatası: {exc}", file=sys.stderr)
+        return 1
+
+    except ValueError as exc:
+        print(f"[cx] Geçersiz parametre: {exc}", file=sys.stderr)
+        return 1
+
+    except (CX2RuntimeError, RuntimeError) as exc:
+        _safe_write_crash_log(exc)
+        print(f"[cx] Çalışma zamanı hatası: {exc}", file=sys.stderr)
+        return 1
+
+    except Exception as exc:
+        _safe_write_crash_log(exc)
+        print(f"[cx] Beklenmeyen hata: {exc}", file=sys.stderr)
+        return 1
+
     finally:
 
-        runtime.close()
+        try:
+            runtime.close()
+        except Exception:
+            pass
 
 
 def interactive_loop(
@@ -962,10 +1034,52 @@ def interactive_loop(
                 )
             except KeyboardInterrupt:
                 print("\n[cx] Tur durduruldu.")
+            except TimeoutError:
+                print("\n[cx] Tur zaman aşımına uğradı.")
+                try:
+                    runtime.reset_memory_session()
+                except Exception:
+                    pass
+            except AppServerProtocolError as exc:
+                _safe_write_crash_log(exc)
+                print(
+                    "\n[cx] Codex App Server bağlantısı koptu; "
+                    "sonraki istekte yeniden başlatılacak."
+                )
+                try:
+                    runtime.close()
+                except Exception:
+                    pass
+            except ValueError as exc:
+                print(
+                    f"\n[cx] Geçersiz parametre: {exc}"
+                )
+            except (CX2RuntimeError, RuntimeError) as exc:
+                _safe_write_crash_log(exc)
+                print(
+                    f"\n[cx] Çalışma zamanı hatası: {exc}"
+                )
+                try:
+                    runtime.close()
+                except Exception:
+                    pass
+            except Exception as exc:
+                _safe_write_crash_log(exc)
+                print(
+                    f"\n[cx] Beklenmeyen hata oluştu: {exc}. "
+                    "Ayrıntılar hata günlüğüne yazıldı."
+                )
+                try:
+                    runtime.close()
+                except Exception:
+                    pass
 
     finally:
 
-        runtime.close()
+        try:
+            runtime.close()
+        except Exception:
+            pass
 
     return 0
 
@@ -1140,8 +1254,6 @@ def _run_cli_entrypoint() -> int:
     semantics. It exists only so PowerShell/native stderr handling
     cannot destroy the diagnostic traceback.
     """
-    import traceback
-
     crash_path = (
         CX2_HOME
         / "cx2-cli-last-crash.txt"
@@ -1156,15 +1268,8 @@ def _run_cli_entrypoint() -> int:
     try:
         return main()
 
-    except BaseException:
-        try:
-            crash_path.write_text(
-                traceback.format_exc(),
-                encoding="utf-8",
-            )
-        except Exception:
-            pass
-
+    except BaseException as exc:
+        _write_crash_log(exc)
         raise
 
 

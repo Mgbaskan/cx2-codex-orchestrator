@@ -96,6 +96,16 @@ FINAL_STATUSES = {
     "failed",
 }
 
+MAX_INTERACTIVE_APPROVAL_PROMPTS_PER_TURN: int = 6
+
+
+@dataclass
+class TurnApprovalState:
+    request_id_responses: dict[Any, dict[str, Any]] = field(default_factory=dict)
+    declined_identities: set[tuple[str, str, str]] = field(default_factory=set)
+    session_accepted_identities: set[tuple[str, str, str]] = field(default_factory=set)
+    circuit_warning_rendered: bool = False
+
 
 # =============================================================
 # Structured result
@@ -182,6 +192,18 @@ class TurnRunResult:
 
     event_sequence: int = 0
     last_mutation_sequence: int = 0
+
+    # Phase 4: Approval state & telemetry
+    server_approval_request_count: int = 0
+    interactive_approval_prompt_count: int = 0
+    exact_replay_count: int = 0
+    auto_decline_count: int = 0
+    human_approval_wait_seconds: float = 0.0
+    circuit_breaker_opened: bool = False
+
+    approval_state: TurnApprovalState = field(
+        default_factory=lambda: TurnApprovalState()
+    )
 
     def to_dict(
         self,
@@ -891,6 +913,7 @@ class StreamingTurnRunner:
         *,
         live: bool = True,
         poll_interval: float = 0.03,
+        max_approval_prompts_per_turn: int = MAX_INTERACTIVE_APPROVAL_PROMPTS_PER_TURN,
     ) -> None:
 
         self.client = client
@@ -900,10 +923,14 @@ class StreamingTurnRunner:
             _configure_live_stdio_safety()
 
         self.poll_interval = max(
-            0.005,
+            0.001,
             float(
                 poll_interval
             ),
+        )
+        self.max_approval_prompts_per_turn = max(
+            1,
+            int(max_approval_prompts_per_turn),
         )
 
     # ---------------------------------------------------------
@@ -1106,10 +1133,12 @@ class StreamingTurnRunner:
         timeout: float,
     ) -> TurnRunResult:
 
-        deadline = (
-            time.monotonic()
+        start_time = time.monotonic()
+        base_deadline = (
+            start_time
             + timeout
         )
+        interrupt_extension = 0.0
 
         interrupted_once = False
 
@@ -1282,9 +1311,15 @@ class StreamingTurnRunner:
                             f"(turn: {result.turn_id})."
                         )
 
+                effective_deadline = (
+                    base_deadline
+                    + result.human_approval_wait_seconds
+                    + interrupt_extension
+                )
+
                 if (
                     time.monotonic()
-                    >= deadline
+                    >= effective_deadline
                 ):
                     try:
                         self.interrupt(
@@ -1327,11 +1362,13 @@ class StreamingTurnRunner:
 
                 # Give App Server time to emit
                 # turn/completed status=interrupted.
-                deadline = max(
-                    deadline,
-                    time.monotonic()
-                    + 15.0,
+                needed_extension = (
+                    time.monotonic() + 15.0
+                ) - (
+                    base_deadline + result.human_approval_wait_seconds
                 )
+                if needed_extension > interrupt_extension:
+                    interrupt_extension = needed_extension
 
     # ---------------------------------------------------------
     # Ctrl+C / explicit interrupt
@@ -1406,6 +1443,9 @@ class StreamingTurnRunner:
 
             return
 
+        result.server_approval_request_count += 1
+        approval_state = result.approval_state
+
         def record(
             action: str,
         ) -> None:
@@ -1419,6 +1459,20 @@ class StreamingTurnRunner:
                         action,
                 }
             )
+
+        # -----------------------------------------------------
+        # Case A: Same request ID replay idempotency
+        # -----------------------------------------------------
+        if request_id is not None and request_id in approval_state.request_id_responses:
+            cached_response = approval_state.request_id_responses[request_id]
+            result.exact_replay_count += 1
+            self.client.respond(
+                request_id,
+                cached_response,
+            )
+            decision = cached_response.get("decision", "cached")
+            record(f"replay:{decision}")
+            return
 
         def safe_prompt(
             *,
@@ -1452,20 +1506,46 @@ class StreamingTurnRunner:
             if not safe_default:
                 return ""
 
-            if not self.live:
+            if not self.live or not getattr(_CX2_TERMINAL, "can_prompt", False):
                 return safe_default
 
-            decision = _CX2_TERMINAL.approval_prompt(
-                title=title,
-                details=details,
-                decisions=decisions,
-                default_decision=safe_default,
-            )
+            # Measure human blocking time
+            result.interactive_approval_prompt_count += 1
+            t_start = time.monotonic()
+            try:
+                decision = _CX2_TERMINAL.approval_prompt(
+                    title=title,
+                    details=details,
+                    decisions=decisions,
+                    default_decision=safe_default,
+                )
+            finally:
+                t_end = time.monotonic()
+                wait_sec = max(0.0, t_end - t_start)
+                result.human_approval_wait_seconds += wait_sec
 
             if decision not in decisions:
                 return safe_default
 
             return decision
+
+        def send_decision(
+            decision: str,
+            identity: tuple[str, str, str] | None = None,
+        ) -> None:
+            payload = {"decision": decision}
+            self.client.respond(
+                request_id,
+                payload,
+            )
+            if request_id is not None:
+                approval_state.request_id_responses[request_id] = payload
+            if identity is not None:
+                if decision in ("decline", "denied", "cancel", "abort"):
+                    approval_state.declined_identities.add(identity)
+                elif decision in ("acceptForSession", "approved_for_session"):
+                    approval_state.session_accepted_identities.add(identity)
+            record(decision)
 
         # -----------------------------------------------------
         # Modern command approval
@@ -1558,6 +1638,37 @@ class StreamingTurnRunner:
                     "Additional permissions requested."
                 )
 
+            # Build exact authorization identity
+            cmd_text = str(command or "").strip()
+            cwd_text = str(cwd or "").strip()
+            identity = (method, cwd_text, cmd_text)
+
+            # Check explicit session accept memory
+            if identity in approval_state.session_accepted_identities:
+                session_decision = "acceptForSession" if "acceptForSession" in decisions else ("accept" if "accept" in decisions else "decline")
+                send_decision(session_decision, identity=identity)
+                return
+
+            # Check exact decline memory
+            if identity in approval_state.declined_identities:
+                result.auto_decline_count += 1
+                decline_decision = "decline" if "decline" in decisions else "cancel"
+                send_decision(decline_decision, identity=identity)
+                return
+
+            # Check circuit breaker
+            if result.interactive_approval_prompt_count >= self.max_approval_prompts_per_turn:
+                result.circuit_breaker_opened = True
+                if not approval_state.circuit_warning_rendered:
+                    if self.live:
+                        _CX2_TERMINAL.warning(
+                            f"Tur içi onay sınırı aşıldı ({result.interactive_approval_prompt_count}/{self.max_approval_prompts_per_turn}). Kalan komut onay istekleri otomatik reddediliyor."
+                        )
+                    approval_state.circuit_warning_rendered = True
+                decline_decision = "decline" if "decline" in decisions else "cancel"
+                send_decision(decline_decision, identity=identity)
+                return
+
             decision = safe_prompt(
                 title="Command execution",
                 details=details,
@@ -1581,18 +1692,7 @@ class StreamingTurnRunner:
 
                 return
 
-            self.client.respond(
-                request_id,
-                {
-                    "decision":
-                        decision,
-                },
-            )
-
-            record(
-                decision
-            )
-
+            send_decision(decision, identity=identity)
             return
 
         # -----------------------------------------------------
@@ -1647,6 +1747,18 @@ class StreamingTurnRunner:
                 "cancel",
             ]
 
+            # Check circuit breaker for file changes too
+            if result.interactive_approval_prompt_count >= self.max_approval_prompts_per_turn:
+                result.circuit_breaker_opened = True
+                if not approval_state.circuit_warning_rendered:
+                    if self.live:
+                        _CX2_TERMINAL.warning(
+                            f"Tur içi onay sınırı aşıldı ({result.interactive_approval_prompt_count}/{self.max_approval_prompts_per_turn}). Kalan onay istekleri otomatik reddediliyor."
+                        )
+                    approval_state.circuit_warning_rendered = True
+                send_decision("decline")
+                return
+
             decision = safe_prompt(
                 title="File changes",
                 details=details,
@@ -1654,18 +1766,7 @@ class StreamingTurnRunner:
                 default="decline",
             )
 
-            self.client.respond(
-                request_id,
-                {
-                    "decision":
-                        decision,
-                },
-            )
-
-            record(
-                decision
-            )
-
+            send_decision(decision)
             return
 
         # -----------------------------------------------------
@@ -1706,6 +1807,7 @@ class StreamingTurnRunner:
                     + cwd
                 )
 
+            command_text = ""
             if isinstance(
                 command,
                 list,
@@ -1713,8 +1815,15 @@ class StreamingTurnRunner:
                 command_text = " ".join(
                     str(part)
                     for part in command
-                )
+                ).strip()
 
+                if command_text:
+                    details.append(
+                        "Command: "
+                        + command_text
+                    )
+            elif isinstance(command, str):
+                command_text = command.strip()
                 if command_text:
                     details.append(
                         "Command: "
@@ -1728,6 +1837,32 @@ class StreamingTurnRunner:
                 "abort",
             ]
 
+            cwd_text = str(cwd or "").strip()
+            identity = (method, cwd_text, command_text)
+
+            if identity in approval_state.session_accepted_identities:
+                session_decision = "approved_for_session" if "approved_for_session" in decisions else "approved"
+                send_decision(session_decision, identity=identity)
+                return
+
+            if identity in approval_state.declined_identities:
+                result.auto_decline_count += 1
+                decline_decision = "denied" if "denied" in decisions else "abort"
+                send_decision(decline_decision, identity=identity)
+                return
+
+            if result.interactive_approval_prompt_count >= self.max_approval_prompts_per_turn:
+                result.circuit_breaker_opened = True
+                if not approval_state.circuit_warning_rendered:
+                    if self.live:
+                        _CX2_TERMINAL.warning(
+                            f"Tur içi onay sınırı aşıldı ({result.interactive_approval_prompt_count}/{self.max_approval_prompts_per_turn}). Kalan komut onay istekleri otomatik reddediliyor."
+                        )
+                    approval_state.circuit_warning_rendered = True
+                decline_decision = "denied" if "denied" in decisions else "abort"
+                send_decision(decline_decision, identity=identity)
+                return
+
             decision = safe_prompt(
                 title="Command execution",
                 details=details,
@@ -1735,18 +1870,23 @@ class StreamingTurnRunner:
                 default="denied",
             )
 
-            self.client.respond(
-                request_id,
-                {
-                    "decision":
-                        decision,
-                },
-            )
+            if not decision:
+                self.client.respond_error(
+                    request_id,
+                    -32000,
+                    (
+                        "No safe string decision available "
+                        "for command approval."
+                    ),
+                )
 
-            record(
-                decision
-            )
+                record(
+                    "deny-error"
+                )
 
+                return
+
+            send_decision(decision, identity=identity)
             return
 
         # -----------------------------------------------------
@@ -1818,6 +1958,17 @@ class StreamingTurnRunner:
                 "abort",
             ]
 
+            if result.interactive_approval_prompt_count >= self.max_approval_prompts_per_turn:
+                result.circuit_breaker_opened = True
+                if not approval_state.circuit_warning_rendered:
+                    if self.live:
+                        _CX2_TERMINAL.warning(
+                            f"Tur içi onay sınırı aşıldı ({result.interactive_approval_prompt_count}/{self.max_approval_prompts_per_turn}). Kalan onay istekleri otomatik reddediliyor."
+                        )
+                    approval_state.circuit_warning_rendered = True
+                send_decision("denied")
+                return
+
             decision = safe_prompt(
                 title="File changes",
                 details=details,
@@ -1825,18 +1976,7 @@ class StreamingTurnRunner:
                 default="denied",
             )
 
-            self.client.respond(
-                request_id,
-                {
-                    "decision":
-                        decision,
-                },
-            )
-
-            record(
-                decision
-            )
-
+            send_decision(decision)
             return
 
         # -----------------------------------------------------
@@ -2673,6 +2813,8 @@ class StreamingTurnRunner:
 
 
 __all__ = [
+    "MAX_INTERACTIVE_APPROVAL_PROMPTS_PER_TURN",
     "StreamingTurnRunner",
+    "TurnApprovalState",
     "TurnRunResult",
 ]

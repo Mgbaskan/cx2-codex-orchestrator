@@ -54,6 +54,12 @@ from cx import (
 # CX2_ATTACHMENT_CLI_V1
 from input_adapter import CX2InputAction, build_cli_input_items
 
+from prompt_transport import (
+    PromptTransportError,
+    capture_multiline_paste,
+    resolve_prompt_source,
+)
+
 from budget_adapter import (
     read_live_quota,
 )
@@ -107,6 +113,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     parser.add_argument(
+        "--prompt-file",
+        metavar="PATH",
+        help="UTF-8 dosya içeriğini birincil prompt olarak kullanır",
+    )
+
+    parser.add_argument(
+        "--stdin",
+        action="store_true",
+        help="UTF-8 promptu stdin üzerinden okur",
+    )
+
+    parser.add_argument(
         "--doctor",
         action="store_true",
         help="CX runtime sağlık kontrolü",
@@ -119,6 +137,12 @@ def build_parser() -> argparse.ArgumentParser:
             "Sadece lokal routing sonucunu göster; "
             "model turn'ü başlatmaz"
         ),
+    )
+
+    parser.add_argument(
+        "--route-file",
+        metavar="PATH",
+        help="Dosyadaki promptun routing sonucunu model turn olmadan gösterir",
     )
 
     parser.add_argument(
@@ -532,6 +556,7 @@ def print_interactive_help() -> None:
     print()
     print("Temel")
     print("  /help                  Bu yardımı göster.")
+    print("  /paste                 Çok satırlı prompt giriş modu (.send ile gönder, .cancel ile iptal et).")
     print("  /clear                 Terminal ekranını temizle (/cls).")
     print("  /exit                  CX interaktif moddan çık.")
     print()
@@ -590,6 +615,30 @@ def handle_interactive_command(
     }:
 
         print_interactive_help()
+
+        return True, False
+
+    if folded in {
+        "/paste",
+        "--paste",
+        "paste",
+    }:
+
+        pasted = capture_multiline_paste()
+
+        if pasted:
+
+            if runtime is not None:
+
+                try:
+                    runtime.execute_prompt(
+                        prompt=pasted,
+                        cwd=cwd,
+                        repo=repo,
+                        db=db,
+                    )
+                except KeyboardInterrupt:
+                    print("\n[cx] Tur durduruldu.")
 
         return True, False
 
@@ -959,39 +1008,27 @@ def main(
 
         return production_cx.doctor()
 
-    if args.route is not None:
-
-        try:
-            route_prompt = normalize_external_text(
-                args.route
-            )
-        except InvalidUnicodeInputError:
-            print(
-                "[cx] Girdi kodlaması geçersiz; metin kayıpsız çözülemedi.",
-                file=sys.stderr,
-            )
-            return 1
-
-        print_local_route(
-            route_prompt,
+    try:
+        resolved_source = resolve_prompt_source(
+            args,
             cwd,
         )
-
-        return 0
-
-    raw_one_shot = " ".join(
-        args.prompt
-    ).strip()
-    try:
-        one_shot_prompt = normalize_external_text(
-            raw_one_shot
-        )
-    except InvalidUnicodeInputError:
+    except PromptTransportError as exc:
         print(
-            "[cx] Girdi kodlaması geçersiz; metin kayıpsız çözülemedi.",
+            f"[cx] prompt error: {exc}",
             file=sys.stderr,
         )
         return 1
+
+    if resolved_source.is_route_only:
+        assert resolved_source.prompt is not None
+        print_local_route(
+            resolved_source.prompt,
+            cwd,
+        )
+        return 0
+
+    one_shot_prompt = resolved_source.prompt
 
     db = None
 
@@ -1005,7 +1042,6 @@ def main(
             or (
                 not args.quota
                 and not args.doctor
-                and args.route is None
             )
         ):
 

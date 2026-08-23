@@ -188,13 +188,13 @@ TYPECHECK_COMMAND_PATTERNS = [
         r"\b("
         r"tsc|"
         r"npx\s+tsc|"
-        r"npm\s+run\s+typecheck|"
-        r"pnpm\s+(?:run\s+)?typecheck|"
-        r"yarn\s+typecheck|"
-        r"bun\s+typecheck|"
+        r"npm\s+run\s+(?:typecheck|type-check)|"
+        r"pnpm\s+(?:run\s+)?(?:typecheck|type-check)|"
+        r"yarn\s+(?:run\s+)?(?:typecheck|type-check)|"
+        r"bun\s+(?:run\s+)?(?:typecheck|type-check)|"
         r"mypy|"
         r"pyright"
-        r")\b",
+        r")(?![-\w])",
         re.IGNORECASE,
     ),
 ]
@@ -803,45 +803,74 @@ def extract_changed_files_from_items(completed_items: list[dict[str, Any]], repo
     return deduplicate_changed_files(files, repo_root)
 
 
-def unwrap_display_command(command: str) -> str:
-    if not isinstance(command, str) or not command.strip():
-        return ""
+def unwrap_display_command(command: str, *, _max_depth: int = 3) -> str:
+    if not isinstance(command, str) or not command.strip() or _max_depth <= 0:
+        return command.strip() if isinstance(command, str) else ""
     text = command.strip()
+
+    unwrapped = None
 
     # Match PowerShell / pwsh wrapper: ...powershell.exe ... -Command "..." or '...'
     ps_match = re.search(
-        r"(?:powershell|pwsh)(?:\.exe)?\b.*?(?:-command|-c)\s+(['\"])(.*?)\1",
+        r"(?:powershell|pwsh)(?:\.exe)?\b.*?(?:-command|-c)\s+(['\"])(.*?)\1\s*$",
         text,
         re.IGNORECASE | re.DOTALL,
     )
     if ps_match:
         inner = ps_match.group(2).strip()
         if inner:
-            return inner
-
-    # Match cmd.exe wrapper: ...cmd(?:\.exe)? /c "..." or '...'
-    cmd_match = re.search(
-        r"cmd(?:\.exe)?\s+/c\s+(['\"])(.*?)\1",
-        text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if cmd_match:
-        inner = cmd_match.group(2).strip()
-        if inner:
-            return inner
+            unwrapped = inner
 
     # Match bash/sh/zsh wrapper: ...(bash|sh|zsh) -c "..." or '...'
-    sh_match = re.search(
-        r"(?:bash|sh|zsh)(?:\.exe)?\s+-c\s+(['\"])(.*?)\1",
-        text,
-        re.IGNORECASE | re.DOTALL,
-    )
-    if sh_match:
-        inner = sh_match.group(2).strip()
-        if inner:
-            return inner
+    if unwrapped is None:
+        sh_match = re.search(
+            r"(?:bash|sh|zsh)(?:\.exe)?\s+-c\s+(['\"])(.*?)\1\s*$",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if sh_match:
+            inner = sh_match.group(2).strip()
+            if inner:
+                unwrapped = inner
+
+    # Match cmd.exe wrapper: ...cmd(?:\.exe)? /c ...
+    if unwrapped is None:
+        cmd_prefix = re.match(
+            r"^(?:.*?\b)?cmd(?:\.exe)?\s+/c(?:\s+(.+))?$",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if cmd_prefix and cmd_prefix.group(1):
+            rest = cmd_prefix.group(1).strip()
+            if rest:
+                # If entire rest is enclosed in outer quotes: "git status" -> git status
+                m_quoted = re.match(r"^(['\"])(.*)\1$", rest, re.DOTALL)
+                if m_quoted:
+                    inner = m_quoted.group(2).strip()
+                    if inner:
+                        unwrapped = inner
+                else:
+                    unwrapped = rest
+
+    if unwrapped is not None and unwrapped != text:
+        return unwrap_display_command(unwrapped, _max_depth=_max_depth - 1)
 
     return text
+
+
+def is_ripgrep_command(command: str) -> bool:
+    """Check if the executed command is a ripgrep (rg) invocation."""
+    if not isinstance(command, str) or not command.strip():
+        return False
+    unwrapped = unwrap_display_command(command)
+    if not unwrapped:
+        return False
+    tokens = unwrapped.strip().split()
+    if not tokens:
+        return False
+    exe_token = tokens[0].strip("\"'")
+    exe_base = os.path.basename(exe_token).lower()
+    return exe_base in ("rg", "rg.exe", "ripgrep", "ripgrep.exe")
 
 
 def classify_file(file_path: str) -> str:

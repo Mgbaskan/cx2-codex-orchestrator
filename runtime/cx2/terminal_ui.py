@@ -7,7 +7,10 @@ import threading
 import time
 from typing import Any
 
-from verification_gate import unwrap_display_command
+from verification_gate import (
+    is_ripgrep_command,
+    unwrap_display_command,
+)
 
 
 CX2_TERMINAL_RENDERER_V1 = True
@@ -1126,6 +1129,7 @@ class TerminalRenderer:
         )
 
         dur_str = self._format_duration(duration)
+        cmd_raw = str(summary.get("command") or summary.get("display_command") or "")
 
         if status == "interrupted" or summary.get("interrupted"):
             marker = self._yellow(
@@ -1136,6 +1140,12 @@ class TerminalRenderer:
         elif exit_code == 0:
             marker = self._green(
                 "[ok]"
+            )
+            text = f"{marker} {dur_str}" if dur_str else marker
+
+        elif exit_code == 1 and is_ripgrep_command(cmd_raw):
+            marker = self._dim(
+                "[no-match]"
             )
             text = f"{marker} {dur_str}" if dur_str else marker
 

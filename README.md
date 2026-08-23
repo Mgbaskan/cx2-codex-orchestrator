@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
-[![Release](https://img.shields.io/badge/release-v2.0.7-green.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/releases/tag/v2.0.7)
+[![Release](https://img.shields.io/badge/release-v2.0.8-green.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/releases/tag/v2.0.8)
 [![Tests](https://github.com/Mgbaskan/cx2-codex-orchestrator/actions/workflows/test.yml/badge.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/actions/workflows/test.yml)
 
 **CX2** is a Windows-first, policy-driven orchestration and terminal UX layer for OpenAI Codex.
@@ -110,15 +110,18 @@ CX2 classifies tasks into three primary tiers:
 
 Routing does **not** require an extra model call.
 
-CX2 evaluates deterministic signals such as:
+CX2 evaluates deterministic task-shape signals such as:
 
-- lexical complexity (concurrency, architecture, root cause)
-- task scope (monorepo-wide, cross-service, or single-file)
-- sensitive surface mutation risk (auth/tokens, migrations, infrastructure, secrets)
-- repository characteristics (monorepo structure, tracked file counts, dirty working-tree state)
-- prompt size
-- explicit write intent vs. explicit read-only / no-modification instructions
-- routine styling and documentation reductions
+- **Lexical complexity**: Critical concurrency, distributed consistency, structural redesign, root-cause investigations.
+- **Cross-surface implementation**: Coordinated changes across multiple subprojects (e.g. mobile, backend, web).
+- **Plan & code reconciliation**: Tasks requiring implementation alignment against plan specifications.
+- **Verification matrices**: Tasks defining multi-command or multi-surface quality requirements.
+- **Sensitive surface mutation**: Mutations targeting auth/tokens, database migrations, infrastructure, or secrets.
+- **Repository characteristics**: Monorepo structures, tracked file counts, dirty working-tree state.
+- **Explicit write intent & negation**: Distinguishing positive mutation from explicit read-only instructions (`do not modify files`, `sadece oku`).
+- **Routine reductions**: Bounded risk reductions for superficial styling, typography, typo fixes, or documentation.
+
+Complex tasks route to `deep` tier and `high` reasoning based on task structure rather than prompt length alone.
 
 The routing engine is intentionally heuristic and deterministic rather than LLM-based.
 
@@ -136,15 +139,15 @@ but it also means classification is not equivalent to full semantic understandin
 
 ## Automatic Model Selection
 
-CX2 can map routing tiers to available Codex models.
-
-The current v2.0.7 policy may use models such as:
+CX2 maps routing tiers to available Codex models based on the configured policy:
 
 ```text
 routine  -> gpt-5.6-luna
 standard -> gpt-5.6-terra
 deep     -> gpt-5.6-sol
 ```
+
+If a preferred model is unavailable or not exposed in the user's Codex profile, CX2 deterministically falls back to the next configured visible model according to the policy hierarchy.
 
 Model availability depends on the user's Codex account, environment, and upstream availability.
 
@@ -343,6 +346,38 @@ or:
 ```bash
 npm test ; exit 0
 ```
+
+---
+
+## Required Verification Contract & CWD Provenance
+
+When a user prompt includes an explicit quality gate specification:
+
+```markdown
+QUALITY GATES
+
+Backend:
+- npm run lint
+- npm test
+- npm run build
+
+Web:
+- npm run lint
+- npm run build
+```
+
+CX2 deterministically extracts the required gates and matches them against actual commands executed by the Codex App Server:
+
+- **Deterministic Gate Extraction**: Quality gates under explicit verification headings (`QUALITY GATES`, `DOĞRULAMA KAPILARI`) are extracted without model calls.
+- **Strict Surface / Working-Directory Isolation**: Commands executed in one subproject directory do not satisfy gates in another. For example, `backend -> npm run build` (executed with `cwd="backend"`) is distinct evidence from `web -> npm run build` (executed with `cwd="web"`).
+- **CWD Provenance Preservation**: The CX2 runtime preserves working directory provenance from the App Server through the execution ledger to ensure monorepo commands match their intended surface.
+- **Non-Authoritative Model Prose**: Assistant prose claims (e.g. "All tests passed") cannot satisfy required gates. Only observed App Server command executions with matching command identity, surface working directory, and exit code 0 count as passed.
+- **No Blind Auto-Execution**: CX2 does **not** arbitrarily execute prompt command text on the host outside the Codex turn. The model executes commands within its standard sandbox and approval lifecycle.
+- **Accurate Gate Badges**:
+  ```text
+  [doğrulama] · VERIFIED · zorunlu 8/8 kapı geçti
+  ```
+  If any required gate is missing, failed, or blocked, final status cannot become `VERIFIED`.
 
 ### Important
 
@@ -602,27 +637,64 @@ You can now interact normally:
 cx> explain the authentication flow
 ```
 
-Or use one-shot mode:
+### Multiline Interactive Input (`/paste`)
 
-```powershell
-cx "Explain the authentication flow in src/auth.ts"
+For long multiline prompts in interactive mode, enter paste mode:
+
+```text
+cx> /paste
+paste> Implement the authentication middleware refactor.
+paste> Ensure all error types conform to the RFC-7807 specification.
+paste>
+paste> QUALITY GATES
+paste> - npm run lint
+paste> - npm test
+paste> .send
 ```
 
-Mutation example:
+Use `.send` on an empty line to submit, or `.cancel` to discard.
+
+### One-Shot Execution
+
+Positional prompt:
 
 ```powershell
 cx "Fix the validation bug and run the relevant tests"
 ```
 
----
+### Long Prompt File Transport (`--prompt-file`)
 
-# Interactive Commands
+Pass complex, large task files or specifications with complete UTF-8/multiline fidelity:
+
+```powershell
+cx --prompt-file .\task.md
+```
+
+### Standard Input Piping (`--stdin`)
+
+Pipe prompt text directly into CX2:
+
+```powershell
+Get-Content -Raw -Encoding UTF8 .\task.md | cx --stdin
+```
+
+### Deterministic Route Preview (`--route-file` / `--route`)
+
+Preview the tier, reasoning level, model selection, and sandbox mode without performing model inference:
+
+```powershell
+cx --route-file .\task.md
+```
+
+> [!NOTE]
+> `--file` remains an attachment/context file mention (e.g. `cx "Inspect this log" --file error.log`). It is distinct from `--prompt-file`, which supplies the entire turn prompt.
 
 ## Basic
 
 | Command  | Description           |
 | -------- | --------------------- |
 | `/help`  | Show interactive help |
+| `/paste` | Enter multiline paste mode (`.send` to submit, `.cancel` to abort) |
 | `/clear` | Clear terminal output |
 | `/exit`  | Exit CX2              |
 
@@ -645,11 +717,11 @@ cx "Fix the validation bug and run the relevant tests"
 | `/search <query>`         | Search thread history                             |
 | `/thread [id\|no]`        | Show thread details                               |
 | `/turns [id\|no]`         | Show thread turns                                 |
-| `/resume <id\|no>`        | Resume a thread                                   |
-| `/rename <id\|no> <name>` | Rename a thread                                   |
-| `/archive <id\|no>`       | Archive a thread                                  |
-| `/unarchive <id\|no>`     | Restore an archived thread                        |
-| `/delete <id\|no>`        | Permanently delete a native thread when supported |
+| `/resume [id\|no]`        | Resume a thread                                   |
+| `/rename [id\|no] <name>` | Rename a thread                                   |
+| `/archive [id\|no]`       | Archive a thread                                  |
+| `/unarchive [id\|no]`     | Restore an archived thread                        |
+| `/delete [id\|no]`        | Permanently delete a native thread when supported |
 
 Numeric selectors come from the latest visible `/history` or `/search` result.
 
@@ -723,10 +795,11 @@ The installed configuration is stored under:
 
 Policy controls behavior such as:
 
-- tier thresholds
-- reasoning levels
-- model preferences
-- budget thresholds
+- tier thresholds (`routine_max: 1`, `deep_min: 7`)
+- reasoning levels (`routine: low`, `standard: medium`, `deep: high`)
+- model preferences and fallbacks
+- budget thresholds (70%, 85%, 95%, 100%)
+- tier execution timeouts (`routine: 300s`, `standard: 450s`, `deep: 600s`, override via `execution.turn_timeout_sec`)
 - escalation
 - runtime features
 - experimental integrations
@@ -765,23 +838,29 @@ No specific optimization or token-saving percentage is guaranteed.
 
 # Known Limitations
 
-CX2 v2.0.7 currently has several known limitations.
+CX2 v2.0.8 currently has several known limitations.
 
 ### Windows-first
 
 The current installer, launcher, terminal handling, and CI baseline are Windows-oriented.
 
-### PowerShell 5.1 Argument Handling
+### Windows / App Server Sandbox Spawning
 
-Some direct PowerShell 5.1 argv quoting behavior occurs before the native CX launcher receives arguments.
+Under constrained Windows sandboxes, complex test harnesses that spawn nested child processes (e.g. multi-process test runner harnesses) may be restricted by the platform environment. When this occurs, outcomes are safely classified as `BLOCKED` or `INCONCLUSIVE` rather than false project test failures. Direct in-process test scripts are recommended where possible.
 
-Complex embedded quoting may therefore still encounter upstream PowerShell parsing limitations.
+### Conservative Required Gate Extraction
+
+Required verification gate extraction is intentionally conservative and requires explicit verification headings (e.g. `QUALITY GATES`, `DOĞRULAMA KAPILARI`). Vague inline prose mentions will not be converted into strict required gates.
+
+### No Host Auto-Execution of Prompt Commands
+
+CX2 does not automatically execute required verification commands on the host outside the active model turn. The model performs required commands within its standard sandbox and approval contract.
 
 ### Native Thread Delete Compatibility
 
 CX2 uses a pinned Codex App Server compatibility baseline.
 
-On newer Codex state schemas, native delete may safely refuse the operation rather than attempting an unsafe database mutation.
+On newer Codex state schemas (v42+), native delete safely refuses the operation rather than attempting an unsafe database mutation (`DEGRADED`).
 
 When this occurs:
 
@@ -789,27 +868,23 @@ When this occurs:
 /archive
 ```
 
-is the recommended alternative.
+is the recommended non-destructive alternative.
+
+### PowerShell 5.1 Argument Handling
+
+Some direct PowerShell 5.1 argv quoting behavior occurs before the native CX launcher receives arguments. Complex embedded quoting in one-shot positional arguments may encounter PowerShell parsing limitations; `--prompt-file` or `/paste` mode is recommended for complex multiline input.
 
 ### Non-Git Directories
 
-Non-Git interactive continuity is process-local.
-
-Persistent repository-scoped session behavior is primarily designed around Git repositories.
+Non-Git interactive continuity is process-local. Persistent repository-scoped session behavior is primarily designed around Git repositories.
 
 ### Repository Move / Rename
 
 Moving or renaming a repository can change the repository identity used by the session layer.
 
-### Junctions and Symlinks
-
-Windows junction and symlink identity behavior follows CX2's existing canonical/lexical path safeguards and may not match every user expectation.
-
 ### Deterministic Routing
 
-Routing is heuristic and rule-based.
-
-It is predictable and testable, but it does not have the semantic understanding of a dedicated language model.
+Routing is heuristic and rule-based. It is predictable and testable, but it does not have the semantic understanding of a dedicated language model.
 
 ### Broad Whole-Project Audits
 
@@ -822,7 +897,7 @@ Broad audits on massive codebases with hundreds of files may require custom turn
 Current stable release:
 
 ```text
-CX2 2.0.7
+CX2 2.0.8
 ```
 
 Status:
@@ -833,7 +908,10 @@ STABLE / FROZEN
 
 The public release includes:
 
-- deterministic routing
+- long prompt transport (`--prompt-file`, `--stdin`, `--route-file`, `/paste`)
+- deterministic task-shape risk routing (Router 1.2.2)
+- required verification gate extraction and matching
+- working-directory (CWD) execution provenance
 - quota-aware execution
 - persistent Git sessions
 - numeric thread aliases

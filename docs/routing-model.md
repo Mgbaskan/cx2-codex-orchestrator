@@ -25,9 +25,12 @@ lexical_complexity
 - **Analysis & Flow Inspection** (+2): Flow explanations, architecture inspections, security audits, authentication flow analysis.
 - **Domain Context** (+1 each, bounded to max +3): Contextual domain words (auth, security, migration, production, deployment, microservices). Domain words alone do not force high tiers.
 
-### 2. Task Scope Signals
+### 2. Task Scope & Task-Shape Signals
 - **Broad Scope** (+3): Monorepo-wide refactors, cross-service tasks, whole-codebase operations.
 - **Composite Broad Project Audit** (+4): Whole-project audits, complete codebase inspection, and repository-wide defect/vulnerability hunting across Turkish and English phrasing.
+- **Multi-Surface Implementation** (+4): Coordinated implementations across multiple subprojects (e.g. mobile, backend, web, desktop).
+- **Plan & Code Reconciliation** (+3): Tasks requiring code implementation to align with external plan/spec documents.
+- **Verification Matrix** (+3): Tasks specifying multi-command or multi-surface quality requirements.
 - **Targeted Scope**: Explicit single-file or single-component tasks receive bounded scope attribution.
 
 ### 3. Sensitive Surface & Mutation Risk
@@ -50,6 +53,7 @@ Evaluated only when positive write intent is detected:
 ### 6. Dominance Rules
 - **Critical Concurrency Dominance**: If critical concurrency or deadlock signals are detected, the score is guaranteed to meet or exceed `deep_min` (7), regardless of routine keyword presence.
 - **Broad Project Audit Dominance**: If broad-scope audit or whole-codebase defect hunting is detected (without routine reductions), the task is guaranteed to meet or exceed `deep_min` (7) and route to `deep` tier.
+- **Multi-Surface Task-Shape Dominance**: Tasks coordinating implementation changes across 3+ surfaces meet or exceed `deep_min` (7) and route to `deep` tier.
 - **Routine Scope Capping**: Single-file UI or documentation modifications cannot be forced into `deep` merely by the presence of a domain keyword (e.g. "Change the Authentication button color").
 
 ## Task Tiers

@@ -42,6 +42,32 @@ For whole-project and read-only inspections:
 [audit] · PARTIAL · 5 checks · 2 passed
 ```
 
+## Required Verification Contract
+
+When users specify required quality gates in their prompt under an explicit section heading (`QUALITY GATES`, `DOĞRULAMA KAPILARI`), CX2 activates the Required Verification Contract:
+
+1. **Deterministic Gate Extraction**: Gates are extracted directly from the prompt text without model calls.
+2. **Execution Ledger Matching**: Actual commands executed by the Codex App Server are matched against required gates by:
+   - **Command Identity**: Script names, test flags, and subcommands.
+   - **Surface / CWD Isolation**: Working directory provenance is strictly enforced. An execution in `backend` (e.g. `npm run build`) does not satisfy a `web` gate (`npm run build`).
+3. **Upper-Bound Assurance**: A task can only achieve `VERIFIED` status if all required gates evaluate to `ALL_PASSED`. Missing, failed, or blocked gates prevent false verification.
+4. **Non-Authoritative Model Prose**: Assistant messages asserting success (e.g. "I ran all tests and they passed") cannot satisfy required gates. Only observed App Server command executions count as verification evidence.
+5. **No Blind Host Auto-Execution**: CX2 does not execute arbitrary prompt command text on the host outside the active model turn. The model performs required commands within its standard sandbox and approval contract.
+
+### Required Verification Badge
+
+When required gates are present:
+
+```text
+[doğrulama] · VERIFIED · zorunlu 8/8 kapı geçti
+```
+
+When required gates are partially completed or missing:
+
+```text
+[doğrulama] · UNVERIFIED · zorunlu 4/8 kapı (4 eksik)
+```
+
 ## Masked Command Guard
 
 Commands that attempt to mask failure status codes (e.g. `npm test || true` or `npm test ; exit 0`) are detected and rejected as valid verification evidence.

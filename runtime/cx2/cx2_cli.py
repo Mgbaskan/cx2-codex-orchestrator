@@ -75,7 +75,7 @@ from session_adapter import (
 )
 
 
-CLI_VERSION = "2.0.7"
+CLI_VERSION = "2.0.8"
 
 
 class CX2CLIError(

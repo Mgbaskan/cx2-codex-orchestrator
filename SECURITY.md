@@ -26,5 +26,6 @@ When submitting a security report or diagnostic logs:
 
 | Version | Supported |
 |:---|:---:|
+| 2.0.8 | :white_check_mark: |
 | 2.0.7 | :white_check_mark: |
 | < 2.0.7 | :x: |

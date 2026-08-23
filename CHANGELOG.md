@@ -7,7 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [2.0.7] - 2026-08-21
+## [2.0.8] - 2026-08-23
+
+### Added
+- **Long Prompt Transport Layer**: Complete multi-source prompt transport supporting `--prompt-file PATH`, `--stdin` (PowerShell piping), `--route-file PATH` (deterministic zero-model preview), and interactive `/paste ... .send` multiline mode. Includes strict UTF-8 with BOM handling, a 1 MB safety guard, and full multiline structure preservation. Disambiguates `--file` (attachment mention) from `--prompt-file` (full turn prompt).
+- **Task-Shape Risk Routing (Router 1.2.2)**: Enhanced deterministic routing engine detecting composite task-shape patterns including cross-surface implementations, plan/code reconciliation directives, and explicit verification matrices. Short but structurally complex tasks route reliably to `deep` tier and `high` reasoning independent of raw prompt length. Hardened mutation classification with improved negated-write boundary filtering.
+- **Required Verification Contract**: Conservative deterministic extraction of explicit user-specified quality gates (`QUALITY GATES`). Matches observed App Server command executions by canonical command identity and explicit surface/cwd context. Missing, failed, or blocked required gates prevent false `VERIFIED` status, keeping `FAILED`, `BLOCKED`, `INCONCLUSIVE`, and `INTERRUPTED` states strictly distinct. Model prose is treated as non-authoritative.
+- **Command Execution CWD Provenance**: Preserves explicit command working directory metadata from Codex App Server notifications through `TurnRunResult` and `CommandExecutionSummary` into the required verification matching engine, preventing false 0/N gate coverage for subproject/monorepo commands.
+
+### Changed
+- Upgraded CLI version (`CLI_VERSION = "2.0.8"`) and runtime version (`RUNTIME_VERSION = "2.0.8"`).
+
+### Qualification
+- Validated with 262 deterministic local regression tests across normal and isolated profile environments.
+- Live qualification performed via disposable real-model canary (`gpt-5.6-sol`, `high` reasoning, `workspace-write`) achieving 8/8 observed required gates passed and final assurance `VERIFIED` with zero approval interruptions and zero production mutation.
 
 ### Added
 - **Whole-Project Audit Routing Calibration**: Composite multi-signal detection (`broad-project-audit`) in the deterministic risk engine (`ROUTER_VERSION = "1.2.1"`), ensuring broad repository security, architecture, and defect audits escalate reliably to `deep` tier and `high` reasoning across English and Turkish phrasing.

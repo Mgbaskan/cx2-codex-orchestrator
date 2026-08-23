@@ -402,5 +402,72 @@ class TestAppServerLiveness(unittest.TestCase):
         self.assertNotIn("Traceback (most recent call last)", err_text)
 
 
+    # -------------------------------------------------------------
+    # 13. Delayed dispatcher within 1.0s grace window wins
+    # -------------------------------------------------------------
+    def test_delayed_dispatcher_within_grace_wins(self) -> None:
+        """If dispatcher thread delivers final event within 1.0s grace, terminal result wins."""
+        fake_proc = FakeProcess(exit_codes=[0])
+        completion_event = {
+            "method": "turn/completed",
+            "params": {
+                "turn": {
+                    "id": "turn-test-1",
+                    "status": "completed",
+                }
+            }
+        }
+        client = FakeLivenessClient(process=fake_proc)
+
+        class DelayedDispatcher(threading.Thread):
+            def __init__(self, target_client: FakeLivenessClient, event: dict):
+                super().__init__(daemon=True)
+                self.target_client = target_client
+                self.event = event
+
+            def run(self) -> None:
+                time.sleep(0.05)
+                self.target_client.notifications.append(self.event)
+
+        disp = DelayedDispatcher(client, completion_event)
+        disp.start()
+        client._dispatcher_thread = disp
+
+        runner = StreamingTurnRunner(client, live=False, poll_interval=0.005)
+        res = runner.wait_for_turn(self.result, timeout=10.0)
+        self.assertEqual(res.status, "completed")
+
+    # -------------------------------------------------------------
+    # 14. Delayed dispatcher exceeding 1.0s grace fails with explicit diagnostic
+    # -------------------------------------------------------------
+    def test_delayed_dispatcher_exceeding_grace_fails_with_grace_message(self) -> None:
+        """If dispatcher is still alive after 1.0s join, fail with grace exhaustion diagnostic."""
+        fake_proc = FakeProcess(exit_codes=[0])
+        client = FakeLivenessClient(process=fake_proc)
+
+        class StuckDispatcher(threading.Thread):
+            def __init__(self):
+                super().__init__(daemon=True)
+                self.stop_event = threading.Event()
+
+            def run(self) -> None:
+                # Blocks indefinitely until stopped
+                self.stop_event.wait(timeout=5.0)
+
+        disp = StuckDispatcher()
+        disp.start()
+        client._dispatcher_thread = disp
+
+        runner = StreamingTurnRunner(client, live=False, poll_interval=0.005)
+
+        with self.assertRaises(AppServerProtocolError) as ctx:
+            runner.wait_for_turn(self.result, timeout=10.0)
+
+        disp.stop_event.set()
+        self.assertIn("failed to quiesce within 1.0s grace", str(ctx.exception))
+        self.assertEqual(self.result.status, "failed")
+
+
 if __name__ == "__main__":
     unittest.main()
+

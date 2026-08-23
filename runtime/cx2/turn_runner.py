@@ -1212,6 +1212,16 @@ class StreamingTurnRunner:
                         except Exception:
                             pass
 
+                    dispatcher_alive_after_join = (
+                        getattr(
+                            dispatcher,
+                            "is_alive",
+                            lambda: False,
+                        )()
+                        if dispatcher is not None
+                        else False
+                    )
+
                     # Perform final drain of any events delivered right up to EOF
                     for request in (
                         self.client
@@ -1256,10 +1266,16 @@ class StreamingTurnRunner:
                         )
 
                     if poll_code is not None:
-                        raise AppServerProtocolError(
-                            "Codex App Server process terminated unexpectedly "
-                            f"(exit code: {poll_code}, turn: {result.turn_id})."
-                        )
+                        if dispatcher_alive_after_join:
+                            raise AppServerProtocolError(
+                                "Codex App Server process terminated unexpectedly and dispatcher "
+                                f"failed to quiesce within 1.0s grace (exit code: {poll_code}, turn: {result.turn_id})."
+                            )
+                        else:
+                            raise AppServerProtocolError(
+                                "Codex App Server process terminated unexpectedly "
+                                f"(exit code: {poll_code}, turn: {result.turn_id})."
+                            )
                     else:
                         raise AppServerProtocolError(
                             "Codex App Server dispatcher thread terminated unexpectedly "

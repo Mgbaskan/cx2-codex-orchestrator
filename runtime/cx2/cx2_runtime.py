@@ -65,7 +65,7 @@ from verification_gate import (
 )
 
 
-EXPECTED_ROUTER_VERSION = "1.2.1"
+EXPECTED_ROUTER_VERSION = "1.2.2"
 RUNTIME_VERSION = "2.0.7"
 
 DEFAULT_TURN_TIMEOUTS: dict[str, float] = {

@@ -394,16 +394,16 @@ class TestRouting(unittest.TestCase):
         self.assertIn("risk_signals", res)
         self.assertIn("score_breakdown", res)
         self.assertIn("router_version", res)
-        self.assertEqual(res["router_version"], "1.2.1")
+        self.assertEqual(res["router_version"], "1.2.2")
 
     def test_router_version_consistency_across_adapters(self):
         """All adapter EXPECTED_ROUTER_VERSION guards must match cx.ROUTER_VERSION."""
-        self.assertEqual(cx.ROUTER_VERSION, "1.2.1")
-        self.assertEqual(router_adapter.EXPECTED_ROUTER_VERSION, "1.2.1")
-        self.assertEqual(budget_adapter.EXPECTED_ROUTER_VERSION, "1.2.1")
-        self.assertEqual(session_adapter.EXPECTED_ROUTER_VERSION, "1.2.1")
-        self.assertEqual(telemetry_adapter.EXPECTED_ROUTER_VERSION, "1.2.1")
-        self.assertEqual(cx2_runtime.EXPECTED_ROUTER_VERSION, "1.2.1")
+        self.assertEqual(cx.ROUTER_VERSION, "1.2.2")
+        self.assertEqual(router_adapter.EXPECTED_ROUTER_VERSION, "1.2.2")
+        self.assertEqual(budget_adapter.EXPECTED_ROUTER_VERSION, "1.2.2")
+        self.assertEqual(session_adapter.EXPECTED_ROUTER_VERSION, "1.2.2")
+        self.assertEqual(telemetry_adapter.EXPECTED_ROUTER_VERSION, "1.2.2")
+        self.assertEqual(cx2_runtime.EXPECTED_ROUTER_VERSION, "1.2.2")
 
     def test_graceful_missing_repo_metadata(self):
         """Empty or incomplete repo metadata must not crash the classifier."""

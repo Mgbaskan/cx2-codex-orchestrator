@@ -20,7 +20,7 @@ if str(PRODUCTION_SRC) not in sys.path:
 import cx as production_cx
 
 
-EXPECTED_ROUTER_VERSION = "1.2.1"
+EXPECTED_ROUTER_VERSION = "1.2.2"
 
 
 def canonical_cwd_key(

@@ -96,18 +96,18 @@ def main() -> int:
 
     if (
         production_cx.ROUTER_VERSION
-        != "1.2.1"
+        != "1.2.2"
     ):
         raise RuntimeError(
-            "Production router 1.2.1 degil."
+            "Production router 1.2.2 degil."
         )
 
     if (
         EXPECTED_ROUTER_VERSION
-        != "1.2.1"
+        != "1.2.2"
     ):
         raise RuntimeError(
-            "Runtime guard 1.2.1 degil."
+            "Runtime guard 1.2.2 degil."
         )
 
     print(

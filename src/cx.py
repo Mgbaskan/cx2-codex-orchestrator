@@ -101,7 +101,7 @@ SHIM_DIR = CX_HOME / "shims"
 SHIM_CONFIG_FILE = CX_HOME / "data" / "rtk-shims.json"
 QUOTA_FILE = CX_HOME / "data" / "quota-current.json"
 
-ROUTER_VERSION = "1.2.1"
+ROUTER_VERSION = "1.2.2"
 
 
 CX_CONFIG_OVERRIDES = (
@@ -878,6 +878,7 @@ WRITE_VERB_RULE = (
 WRITE_RULES: list[str] = [
     r"\bfix\b|\bduzelt\w*",
     r"\bimplement\w*|\buygula\w*",
+    r"\bcomplete\b|\btamamla\w*",
     r"\badd\b|\bekle\w*",
     r"\bcreate\b|\bolustur\w*",
     WRITE_VERB_RULE,
@@ -886,33 +887,68 @@ WRITE_RULES: list[str] = [
     r"\bchange\b|\bdegistir\w*",
     r"\bdelete\b|\bsil\w*",
     r"\bremove\b|\bkaldir\w*",
+    r"\bclean\s*up\b|\bcleanup\b|\btemizle\w*",
+    r"\bprettier\b|\bformat\b|\bformatla\w*|\bauto-?format\b|\bcalistir\w*",
     r"\bmigrate\b|\btasi\w*",
     r"\bconvert\b|\bdonustur\w*",
     r"\binstall\b|\bkur\b|\bkurulum\b",
     r"\bresolve\b|\bcoz\w*",
     r"\brename\b|\byeniden\s+adlandir\w*",
+    r"\brewrite\b|\byeniden\s+yaz\w*",
 ]
 
 
 NEGATED_WRITE_RULES: list[str] = [
     # Turkish
-    r"\bhicbir\s+dosya(?:yi|lari)?\s+degistirme\b",
+    r"\bhicbir\s+(?:dosya(?:yi|lari)?|seyi)?\s+degistirme\b",
     r"\bdosya(?:yi|lari)?\s+degistirme\b",
     r"\bdosyalarda\s+degisiklik\s+yapma\b",
     r"\bdegisiklik\s+yapma\b",
+    r"\bdegistirme\s+yapma\b",
+    r"\bkodu\s+degistirme\b",
+    r"\bhicbir\s+(?:seyi|dosyayi|dosyalari)?\s+temizleme\b",
+    r"\btemizleme\s+yapma\b",
+    r"\btemizleme\s+(?:plani|adimlar\w*|strateji\w*)\w*",
     r"\bdosya(?:ya|lara)?\s+yazma\b",
     r"\bsadece\s+oku\b",
     r"\byalnizca\s+oku\b",
+    r"\bkomut(?:lari)?\s+calistirma\b",
+    r"\bcalistirma\s+yapma\b",
+    r"\bdegistirme\b",
 
     # English
-    r"\bdo\s+not\s+(?:modify|change|edit|write)"
-    r"(?:\s+(?:any\s+)?files?)?\b",
+    r"\bcleanup\s+plan\b",
+    r"\bdo\s+not\s+(?:modify|change|edit|write|clean|clean\s+up|run|execute)"
+    r"(?:\s+(?:any\s+)?(?:files?|commands?|code|anything))?\b",
 
-    r"\bdon['’]?t\s+(?:modify|change|edit|write)"
-    r"(?:\s+(?:any\s+)?files?)?\b",
+    r"\bdon['’]?t\s+(?:modify|change|edit|write|clean|clean\s+up|run|execute)"
+    r"(?:\s+(?:any\s+)?(?:files?|commands?|code|anything))?\b",
 
-    r"\bno\s+(?:file\s+)?changes?\b",
+    r"\bwithout\s+(?:changing|modifying|editing|writing|running|executing)\s+(?:any\s+)?(?:files?|commands?|code|anything)?\b",
+    r"\bno\s+(?:file\s+|code\s+)?changes?\b",
     r"\bread[- ]only\b",
+]
+
+
+GLOBAL_READ_ONLY_RULES: list[str] = [
+    r"\bhicbir\s+seyi\s+degistirme\b",
+    r"\bhicbir\s+dosya(?:yi|lari)?\s+degistirme\b",
+    r"\bhicbir\s+(?:seyi|dosyayi|dosyalari)?\s+temizleme\b",
+    r"\bkodu\s+degistirme\b",
+    r"\bdosyalarda\s+degisiklik\s+yapma\b",
+    r"\bdegisiklik\s+yapma\b",
+    r"\bdegistirme\s+yapma\b",
+    r"\bdegistirme\b",
+    r"\bsadece\s+oku\b",
+    r"\byalnizca\s+oku\b",
+    r"\bkomut(?:u|lari|larini)?\s+calistirma\b",
+    r"\bhicbir\s+komut(?:u|lari|larini)?\s+calistirma\b",
+    r"\bcalistirma\s+yapma\b",
+    r"\bread[- ]only\b",
+    r"\bdo\s+not\s+(?:modify|change|edit|write|clean|clean\s+up|run|execute)\s+(?:any\s+)?(?:files?|commands?|code|anything)?\b",
+    r"\bdon['’]?t\s+(?:modify|change|edit|write|clean|clean\s+up|run|execute)\s+(?:any\s+)?(?:files?|commands?|code|anything)?\b",
+    r"\bwithout\s+(?:changing|modifying|editing|writing|running|executing)\s+(?:any\s+)?(?:files?|commands?|code|anything)?\b",
+    r"\bno\s+(?:file\s+|code\s+)?changes?\b",
 ]
 
 
@@ -1138,6 +1174,113 @@ def evaluate_routine_reductions(
     return reduction, reasons, tags
 
 
+def evaluate_task_shape_signals(
+    text: str,
+    mutating: bool,
+    repo: dict[str, Any],
+) -> tuple[int, list[str], list[str], bool]:
+    """
+    Evaluate composite task-shape and execution complexity signals.
+    Returns (points, reasons, signal_tags, has_composite_deep_shape).
+    """
+    points = 0
+    reasons: list[str] = []
+    tags: list[str] = []
+    has_deep_shape = False
+
+    # A. Multi-surface detection (backend, mobile, web)
+    matched_surfaces: set[str] = set()
+    if re.search(r"\b(?:backend|api|server|servis\w*)\b", text, re.IGNORECASE):
+        matched_surfaces.add("backend")
+    if re.search(r"\b(?:mobile|mobil|ios|android)\b", text, re.IGNORECASE):
+        matched_surfaces.add("mobile")
+    if re.search(r"\b(?:web|frontend|ui|client)\b", text, re.IGNORECASE):
+        matched_surfaces.add("web")
+
+    is_multi_surface = len(matched_surfaces) >= 2
+    if is_multi_surface:
+        if mutating:
+            tags.append("task:multi-surface")
+            reasons.append("+2:multi-surface")
+            points += 2
+        else:
+            tags.append("task:multi-surface-scope")
+            reasons.append("+1:multi-surface-scope")
+            points += 1
+
+    # B. Plan / Code reconciliation detection
+    has_plan_marker = bool(re.search(
+        r"\b(?:plana\s+(?:gore|uygun)|gap\s+analiz\w*|plani\s+incele\w*|roadmap|specification|checklist|p0-\d+|p1-\d+|plan\s+and\s+implement|according\s+to\s+(?:the\s+)?plan|gap\s+analysis)\b",
+        text,
+        re.IGNORECASE,
+    ))
+    has_impl_verb = bool(re.search(
+        r"\b(?:tamamla\w*|uygula\w*|implement\w*|complete\b|reconcil\w*|duzelt\w*|fix\b|add\b|guncelle\w*)\b",
+        text,
+        re.IGNORECASE,
+    ))
+    is_plan_reconcile = has_plan_marker and has_impl_verb and mutating
+    if is_plan_reconcile:
+        tags.append("task:plan-reconcile")
+        reasons.append("+2:plan-reconcile")
+        points += 2
+
+    # C. Explicit verification matrix detection
+    is_negated_verify = bool(re.search(
+        r"\b(?:calistirma|dokumante\s+et|acikla|do\s+not\s+run|without\s+running|skip\s+tests?)\b",
+        text,
+        re.IGNORECASE,
+    ))
+    matched_gates: set[str] = set()
+    if re.search(r"\b(?:test|jest|vitest|pytest|unittest|go\s+test|cargo\s+test)\b", text, re.IGNORECASE):
+        matched_gates.add("test")
+    if re.search(r"\b(?:lint|eslint|flake8|ruff|clippy)\b", text, re.IGNORECASE):
+        matched_gates.add("lint")
+    if re.search(r"\b(?:type-?check|tsc|mypy|pyright)\b", text, re.IGNORECASE):
+        matched_gates.add("typecheck")
+    if re.search(r"\b(?:build|npm\s+run\s+build|go\s+build|cargo\s+build)\b", text, re.IGNORECASE):
+        matched_gates.add("build")
+
+    has_verify_intent = bool(re.search(
+        r"\b(?:calistir\w*|kos\w*|execute\b|verify\b|testleri\s+calistir|quality\s+gates?|kalite\s+kapi\w*|run\s+(?:all\s+)?(?:tests?|lint|build|gates?|checks?|suites?))\b",
+        text,
+        re.IGNORECASE,
+    ))
+    is_doc_or_remove_context = bool(re.search(
+        r"\b(?:kaldir\w*|sil\w*|remove\b|delete\b|dokumante\s+et|acikla\w*|explain\b)\b.*\b(?:readme|ornek|example|docs?)\b|\b(?:readme|ornek|example|docs?)\b.*\b(?:kaldir\w*|sil\w*|remove\b|delete\b)",
+        text,
+        re.IGNORECASE,
+    ))
+    is_verification_matrix = len(matched_gates) >= 2 and has_verify_intent and not is_negated_verify and not is_doc_or_remove_context
+    if is_verification_matrix:
+        tags.append("task:verification-matrix")
+        reasons.append("+2:verification-matrix")
+        points += 2
+
+    # D. Multi-surface with full verification composite
+    if is_multi_surface and is_verification_matrix and mutating:
+        tags.append("task:multi-surface-verification")
+        reasons.append("+2:multi-surface-verification")
+        points += 2
+        has_deep_shape = True
+
+    # E. Repository-wide mutation composite
+    has_broad_scope = any(re.search(pat, text, re.IGNORECASE) for pat in BROAD_SCOPE_RULES)
+    is_routine_formatting = bool(re.search(
+        r"\b(?:prettier|formatting|trailing\s+whitespace|typo\w*|yazim\w*)\b",
+        text,
+        re.IGNORECASE,
+    ))
+    if has_broad_scope and mutating and not is_routine_formatting:
+        if is_multi_surface or is_plan_reconcile or is_verification_matrix:
+            tags.append("task:repo-wide-mutation")
+            reasons.append("+2:repo-wide-mutation")
+            points += 2
+            has_deep_shape = True
+
+    return points, reasons, tags, has_deep_shape
+
+
 def classify(
     prompt: str,
     repo: dict[str, Any],
@@ -1147,7 +1290,7 @@ def classify(
     CX2 Deterministic Risk Engine v2 Classifier.
 
     Evaluates prompt lexical complexity, task scope, sensitive surfaces,
-    mutation risk, and repository context without model inference.
+    task-shape complexity, mutation risk, and repository context without model inference.
     """
     text = normalize(prompt)
     reasons: list[str] = []
@@ -1157,6 +1300,7 @@ def classify(
         "scope": [],
         "mutation": [],
         "sensitive": [],
+        "task_shape": [],
         "reductions": [],
     }
     score_breakdown: dict[str, int] = {
@@ -1165,12 +1309,14 @@ def classify(
         "scope": 0,
         "mutation": 0,
         "sensitive": 0,
+        "task_shape": 0,
         "reductions": 0,
     }
 
     # 1. Write intent / sandbox determination (strictly separated)
+    is_global_read_only = any(re.search(pat, text, re.IGNORECASE) for pat in GLOBAL_READ_ONLY_RULES)
     write_scan_text = strip_negated_write_phrases(text)
-    mutating = regex_any(write_scan_text, WRITE_RULES)
+    mutating = (not is_global_read_only) and regex_any(write_scan_text, WRITE_RULES)
     sandbox = "workspace-write" if mutating else "read-only"
     if mutating:
         signals["mutation"].append("workspace-write")
@@ -1195,13 +1341,19 @@ def classify(
     reasons.extend(sens_reasons)
     signals["sensitive"].extend(sens_tags)
 
-    # 5. Repository signals
+    # 5. Task-Shape Composite signals
+    shape_points, shape_reasons, shape_tags, has_composite_deep_shape = evaluate_task_shape_signals(text, mutating, repo)
+    score_breakdown["task_shape"] += shape_points
+    reasons.extend(shape_reasons)
+    signals["task_shape"].extend(shape_tags)
+
+    # 6. Repository signals
     repo_points, repo_reasons, repo_tags = evaluate_repository_signals(repo)
     score_breakdown["repository"] += repo_points
     reasons.extend(repo_reasons)
     signals["repository"].extend(repo_tags)
 
-    # 6. Prompt length signals
+    # 7. Prompt length signals
     if len(prompt) > 1500:
         reasons.append("+1:long-prompt")
         score_breakdown["lexical"] += 1
@@ -1209,7 +1361,7 @@ def classify(
         reasons.append("+1:very-long-prompt")
         score_breakdown["lexical"] += 1
 
-    # 7. Routine reductions
+    # 8. Routine reductions
     red_points, red_reasons, red_tags = evaluate_routine_reductions(text)
     score_breakdown["reductions"] -= red_points
     reasons.extend(red_reasons)
@@ -1221,7 +1373,7 @@ def classify(
     routine_max = int(policy["thresholds"]["routine_max"])
     deep_min = int(policy["thresholds"]["deep_min"])
 
-    # 8. Dominance & Capping rules
+    # 9. Dominance & Capping rules
     if has_critical_concurrency:
         if final_score < deep_min:
             final_score = deep_min
@@ -1232,7 +1384,18 @@ def classify(
             final_score = deep_min
             reasons.append("dominate-deep:broad-project-audit")
 
-    # 9. Tier resolution
+    if has_composite_deep_shape:
+        if final_score < deep_min:
+            final_score = deep_min
+            reasons.append("dominate-deep:task-shape")
+
+    # Read-only non-critical non-audit capping: general explanations do not over-route to deep
+    if not mutating and not has_critical_concurrency and not has_broad_project_audit:
+        if final_score >= deep_min:
+            final_score = deep_min - 1
+            reasons.append("cap-standard:read-only-explanation")
+
+    # 10. Tier resolution
     if final_score <= routine_max:
         tier = "routine"
     elif final_score >= deep_min:

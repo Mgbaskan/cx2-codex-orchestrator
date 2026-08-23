@@ -354,6 +354,7 @@ class CommandExecutionSummary:
     output_snippet: str = ""
     display_command: str = ""
     classification_text: str = ""
+    cwd: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)

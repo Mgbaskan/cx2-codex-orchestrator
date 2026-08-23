@@ -1137,6 +1137,7 @@ class CX2Runtime:
                     output_snippet=str(cmd.get("output_snippet") or ""),
                     display_command=str(cmd.get("display_command") or ""),
                     classification_text=str(cmd.get("classification_text") or cmd.get("output_snippet") or ""),
+                    cwd=cmd.get("cwd"),
                 )
                 for cmd in getattr(final_raw, "command_executions", [])
                 if isinstance(cmd, dict)
@@ -1244,6 +1245,7 @@ class CX2Runtime:
                         output_snippet=str(cmd.get("output_snippet") or ""),
                         display_command=str(cmd.get("display_command") or ""),
                         classification_text=str(cmd.get("classification_text") or cmd.get("output_snippet") or ""),
+                        cwd=cmd.get("cwd"),
                     )
                     for cmd in getattr(cont_raw_result, "command_executions", [])
                     if isinstance(cmd, dict)

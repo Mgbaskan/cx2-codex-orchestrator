@@ -2253,6 +2253,7 @@ class StreamingTurnRunner:
                     "display_command": disp_cmd,
                     "output_snippet": completed_summary.get("output_snippet", ""),
                     "classification_text": raw_out,
+                    "cwd": completed_summary.get("cwd"),
                 })
 
             if (

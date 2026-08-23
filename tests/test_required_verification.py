@@ -673,6 +673,314 @@ Web:
         self.assertEqual(assessment.reason, "DOCS_ONLY_MUTATION")
         self.assertEqual(assessment.required_coverage.status, "ALL_PASSED")
 
+    # =========================================================================
+    # 6. CWD PROVENANCE & ISOLATION TESTS (Phase 4.2)
+    # =========================================================================
+
+    def test_45_app_server_completed_item_cwd_preservation(self) -> None:
+        """App Server item/completed event with explicit cwd must be preserved in TurnRunResult."""
+        from turn_runner import StreamingTurnRunner, TurnRunResult
+        runner = StreamingTurnRunner(None, live=False)
+        result = TurnRunResult(thread_id="th_1", turn_id="tu_1")
+
+        notification = {
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "id": "cmd_1",
+                    "type": "commandExecution",
+                    "command": "npm run build",
+                    "cwd": r"C:\repo\backend",
+                    "exitCode": 0,
+                    "durationMs": 1200,
+                    "status": "completed",
+                }
+            }
+        }
+        runner._handle_notification(result, notification)
+        self.assertEqual(len(result.command_executions), 1)
+        self.assertEqual(result.command_executions[0]["command"], "npm run build")
+        self.assertEqual(result.command_executions[0]["cwd"], r"C:\repo\backend")
+        self.assertEqual(result.command_executions[0]["exit_code"], 0)
+
+    def test_46_app_server_item_missing_cwd_remains_none(self) -> None:
+        """Synthetic event without cwd must preserve None without injecting repo root."""
+        from turn_runner import StreamingTurnRunner, TurnRunResult
+        runner = StreamingTurnRunner(None, live=False)
+        result = TurnRunResult(thread_id="th_1", turn_id="tu_1")
+
+        notification = {
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "id": "cmd_2",
+                    "type": "commandExecution",
+                    "command": "npm run lint",
+                    "exitCode": 0,
+                    "status": "completed",
+                }
+            }
+        }
+        runner._handle_notification(result, notification)
+        self.assertEqual(len(result.command_executions), 1)
+        self.assertEqual(result.command_executions[0]["command"], "npm run lint")
+        self.assertIsNone(result.command_executions[0]["cwd"])
+
+    def test_47_command_execution_summary_backward_compatibility(self) -> None:
+        """CommandExecutionSummary without cwd keyword argument defaults to None."""
+        summary = CommandExecutionSummary(
+            command="npm test",
+            exit_code=0,
+            duration_ms=500,
+            sequence=1,
+            categories=["TEST"],
+        )
+        self.assertIsNone(summary.cwd)
+        d = summary.to_dict()
+        self.assertIn("cwd", d)
+        self.assertIsNone(d["cwd"])
+
+    def test_48_runtime_conversion_preserves_cwd(self) -> None:
+        """Runtime conversion path must preserve cwd in CommandExecutionSummary."""
+        cmd_dict = {
+            "command": "npm run build",
+            "exit_code": 0,
+            "duration_ms": 1000,
+            "sequence": 5,
+            "categories": ["BUILD"],
+            "is_masked": False,
+            "output_snippet": "Build successful",
+            "display_command": "npm run build",
+            "classification_text": "Build successful",
+            "cwd": r"C:\repo\backend",
+        }
+        summary = CommandExecutionSummary(
+            command=str(cmd_dict.get("command") or ""),
+            exit_code=cmd_dict.get("exit_code"),
+            duration_ms=cmd_dict.get("duration_ms"),
+            sequence=int(cmd_dict.get("sequence", 0)),
+            categories=list(cmd_dict.get("categories", [])),
+            is_masked=bool(cmd_dict.get("is_masked", False)),
+            output_snippet=str(cmd_dict.get("output_snippet") or ""),
+            display_command=str(cmd_dict.get("display_command") or ""),
+            classification_text=str(cmd_dict.get("classification_text") or ""),
+            cwd=cmd_dict.get("cwd"),
+        )
+        self.assertEqual(summary.cwd, r"C:\repo\backend")
+
+    def test_49_required_coverage_synthetic_surface_ledger_8_of_8_pass(self) -> None:
+        """Full 8-gate HIBRIT/canary plan with synthetic observed executions containing actual subproject cwd produces 8/8 ALL_PASSED."""
+        prompt = """
+# CANARY PLAN
+
+QUALITY GATES:
+
+Mobile:
+- npm run lint
+- npm test
+
+Backend:
+- npm run lint
+- npm test
+- npm run build
+
+Web:
+- npm run lint
+- npm run type-check
+- npm run build
+"""
+        plan = extract_required_verification_plan(prompt)
+        self.assertEqual(len(plan.gates), 8)
+
+        repo_root = r"C:\repo"
+        # Synthetic observed executions from App Server with surface-specific cwd
+        raw_cmds = [
+            CommandExecutionSummary(command="npm run lint", exit_code=0, categories=["LINT"], sequence=1, cwd=r"C:\repo\mobile"),
+            CommandExecutionSummary(command="npm test", exit_code=0, categories=["TEST"], sequence=2, cwd=r"C:\repo\mobile"),
+            CommandExecutionSummary(command="npm run lint", exit_code=0, categories=["LINT"], sequence=3, cwd=r"C:\repo\backend"),
+            CommandExecutionSummary(command="npm test", exit_code=0, categories=["TEST"], sequence=4, cwd=r"C:\repo\backend"),
+            CommandExecutionSummary(command="npm run build", exit_code=0, categories=["BUILD"], sequence=5, cwd=r"C:\repo\backend"),
+            CommandExecutionSummary(command="npm run lint", exit_code=0, categories=["LINT"], sequence=6, cwd=r"C:\repo\web"),
+            CommandExecutionSummary(command="npm run type-check", exit_code=0, categories=["TYPECHECK"], sequence=7, cwd=r"C:\repo\web"),
+            CommandExecutionSummary(command="npm run build", exit_code=0, categories=["BUILD"], sequence=8, cwd=r"C:\repo\web"),
+        ]
+
+        cov = evaluate_required_coverage(plan, raw_cmds, repo_root=repo_root)
+        self.assertEqual(cov.required_total, 8)
+        self.assertEqual(cov.passed_count, 8)
+        self.assertEqual(cov.failed_count, 0)
+        self.assertEqual(cov.blocked_count, 0)
+        self.assertEqual(cov.inconclusive_count, 0)
+        self.assertEqual(cov.missing_count, 0)
+        self.assertEqual(cov.status, "ALL_PASSED")
+
+    def test_50_cross_surface_isolation_negative(self) -> None:
+        """Required backend gate executed in web cwd must NOT satisfy backend gate."""
+        prompt = """
+QUALITY GATES:
+
+Backend:
+- npm run build
+"""
+        plan = extract_required_verification_plan(prompt)
+        self.assertEqual(len(plan.gates), 1)
+        repo_root = r"C:\repo"
+        # Executed with cwd = web instead of backend
+        raw_cmds = [
+            CommandExecutionSummary(command="npm run build", exit_code=0, categories=["BUILD"], sequence=1, cwd=r"C:\repo\web"),
+        ]
+        cov = evaluate_required_coverage(plan, raw_cmds, repo_root=repo_root)
+        self.assertEqual(cov.required_total, 1)
+        self.assertEqual(cov.passed_count, 0)
+        self.assertEqual(cov.missing_count, 1)
+        self.assertEqual(cov.status, "UNVERIFIED")
+
+    def test_51_root_execution_negative(self) -> None:
+        """Required backend gate executed at repo root cwd must NOT satisfy backend gate."""
+        prompt = """
+QUALITY GATES:
+
+Backend:
+- npm run build
+"""
+        plan = extract_required_verification_plan(prompt)
+        self.assertEqual(len(plan.gates), 1)
+        repo_root = r"C:\repo"
+        # Executed with cwd = repo root
+        raw_cmds = [
+            CommandExecutionSummary(command="npm run build", exit_code=0, categories=["BUILD"], sequence=1, cwd=r"C:\repo"),
+        ]
+        cov = evaluate_required_coverage(plan, raw_cmds, repo_root=repo_root)
+        self.assertEqual(cov.required_total, 1)
+        self.assertEqual(cov.passed_count, 0)
+        self.assertEqual(cov.missing_count, 1)
+        self.assertEqual(cov.status, "UNVERIFIED")
+
+    def test_52_wrapper_fallback_without_cwd_regression(self) -> None:
+        """Commands with shell wrapper syntax like cd backend && ... or npm --prefix backend ... still match when cwd is None."""
+        prompt = """
+QUALITY GATES:
+
+Backend:
+- npm run lint
+- npm run build
+"""
+        plan = extract_required_verification_plan(prompt)
+        self.assertEqual(len(plan.gates), 2)
+        repo_root = r"C:\repo"
+        raw_cmds = [
+            CommandExecutionSummary(command="cd backend && npm run lint", exit_code=0, categories=["LINT"], sequence=1, cwd=None),
+            CommandExecutionSummary(command="npm --prefix backend run build", exit_code=0, categories=["BUILD"], sequence=2, cwd=None),
+        ]
+        cov = evaluate_required_coverage(plan, raw_cmds, repo_root=repo_root)
+        self.assertEqual(cov.required_total, 2)
+        self.assertEqual(cov.passed_count, 2)
+        self.assertEqual(cov.missing_count, 0)
+        self.assertEqual(cov.status, "ALL_PASSED")
+
+    def test_53_explicit_cwd_simple_command_surface_recognized(self) -> None:
+        """Simple command 'npm run build' with explicit cwd recognizes backend surface."""
+        cmd, surface = unwrap_command_and_surface("npm run build", cwd=r"C:\repo\backend", repo_root=r"C:\repo")
+        self.assertEqual(cmd, "npm run build")
+        self.assertEqual(surface, "backend")
+
+    def test_54_continuation_ledger_cwd_preservation(self) -> None:
+        """Combined ledger across 2 turns preserves cwd on all entries and achieves 8/8."""
+        prompt = """
+QUALITY GATES:
+
+Mobile:
+- npm run lint
+- npm test
+
+Backend:
+- npm run lint
+- npm test
+- npm run build
+
+Web:
+- npm run lint
+- npm run type-check
+- npm run build
+"""
+        plan = extract_required_verification_plan(prompt)
+        self.assertEqual(len(plan.gates), 8)
+        repo_root = r"C:\repo"
+
+        # Turn 1: Mobile (2) + Backend (3)
+        t1_cmds = [
+            CommandExecutionSummary(command="npm run lint", exit_code=0, categories=["LINT"], sequence=1, cwd=r"C:\repo\mobile"),
+            CommandExecutionSummary(command="npm test", exit_code=0, categories=["TEST"], sequence=2, cwd=r"C:\repo\mobile"),
+            CommandExecutionSummary(command="npm run lint", exit_code=0, categories=["LINT"], sequence=3, cwd=r"C:\repo\backend"),
+            CommandExecutionSummary(command="npm test", exit_code=0, categories=["TEST"], sequence=4, cwd=r"C:\repo\backend"),
+            CommandExecutionSummary(command="npm run build", exit_code=0, categories=["BUILD"], sequence=5, cwd=r"C:\repo\backend"),
+        ]
+
+        # Turn 2: Web (3)
+        t2_raw_dicts = [
+            {"command": "npm run lint", "exit_code": 0, "categories": ["LINT"], "sequence": 1, "cwd": r"C:\repo\web"},
+            {"command": "npm run type-check", "exit_code": 0, "categories": ["TYPECHECK"], "sequence": 2, "cwd": r"C:\repo\web"},
+            {"command": "npm run build", "exit_code": 0, "categories": ["BUILD"], "sequence": 3, "cwd": r"C:\repo\web"},
+        ]
+        t1_seq = 5
+        t2_cmds = [
+            CommandExecutionSummary(
+                command=str(cmd.get("command") or ""),
+                exit_code=cmd.get("exit_code"),
+                duration_ms=cmd.get("duration_ms"),
+                sequence=int(cmd.get("sequence", 0)) + t1_seq,
+                categories=list(cmd.get("categories", [])),
+                cwd=cmd.get("cwd"),
+            )
+            for cmd in t2_raw_dicts
+        ]
+
+        combined_cmds = t1_cmds + t2_cmds
+        self.assertEqual(len(combined_cmds), 8)
+        cov = evaluate_required_coverage(plan, combined_cmds, repo_root=repo_root)
+        self.assertEqual(cov.required_total, 8)
+        self.assertEqual(cov.passed_count, 8)
+        self.assertEqual(cov.missing_count, 0)
+        self.assertEqual(cov.status, "ALL_PASSED")
+
+    def test_55_interrupted_turn_cwd_preservation(self) -> None:
+        """Interrupted turn with completed commands retains cwd on summaries and evaluates to INTERRUPTED."""
+        prompt = """
+QUALITY GATES:
+
+Backend:
+- npm run lint
+- npm test
+"""
+        plan = extract_required_verification_plan(prompt)
+        self.assertEqual(len(plan.gates), 2)
+        repo_root = r"C:\repo"
+
+        raw_cmds = [
+            CommandExecutionSummary(command="npm run lint", exit_code=0, categories=["LINT"], sequence=1, cwd=r"C:\repo\backend"),
+        ]
+        from verification_gate import _apply_required_coverage_to_assessment
+        base_interrupted = VerificationAssessment(
+            status="INTERRUPTED",
+            reason="INTERRUPTED",
+            evidence_level="NONE",
+            requires_continuation=False,
+            mutation_detected=True,
+            changed_files=["backend/src/status.js"],
+            last_mutation_sequence=1,
+        )
+        assessment = _apply_required_coverage_to_assessment(
+            base_interrupted,
+            plan,
+            raw_cmds,
+            repo_root=repo_root,
+        )
+        self.assertEqual(assessment.status, "INTERRUPTED")
+        self.assertEqual(assessment.reason, "INTERRUPTED")
+        self.assertIsNotNone(assessment.required_coverage)
+        self.assertEqual(assessment.required_coverage.status, "INTERRUPTED")
+        self.assertEqual(assessment.required_coverage.interrupted_count, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

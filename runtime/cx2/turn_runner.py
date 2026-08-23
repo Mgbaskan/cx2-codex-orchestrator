@@ -26,6 +26,10 @@ if str(STAGE) not in sys.path:
         str(STAGE),
     )
 
+from client import (
+    AppServerProtocolError,
+)
+
 from verification_gate import (
     classify_command,
     extract_changed_files_from_diff,
@@ -1149,6 +1153,37 @@ class StreamingTurnRunner:
                     in FINAL_STATUSES
                 ):
                     return result
+
+                # Check process liveness: if the App Server subprocess has terminated
+                # before reaching a terminal turn status, fail immediately.
+                process = getattr(
+                    self.client,
+                    "process",
+                    None,
+                )
+                if process is not None:
+                    try:
+                        poll_code = (
+                            process.poll()
+                        )
+                    except Exception:
+                        poll_code = None
+
+                    if (
+                        poll_code
+                        is not None
+                    ):
+                        if (
+                            result.status
+                            not in FINAL_STATUSES
+                        ):
+                            result.status = (
+                                "failed"
+                            )
+                        raise AppServerProtocolError(
+                            "Codex App Server process terminated unexpectedly "
+                            f"(exit code: {poll_code}, turn: {result.turn_id})."
+                        )
 
                 if (
                     time.monotonic()

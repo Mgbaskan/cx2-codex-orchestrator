@@ -60,8 +60,14 @@ from turn_runner import (
 from verification_gate import (
     CommandExecutionSummary,
     VerificationAssessment,
+    _apply_required_coverage_to_assessment,
     assess_turn,
     is_explicit_verification_skip,
+)
+
+from required_verification import (
+    RequiredVerificationPlan,
+    extract_required_verification_plan,
 )
 
 
@@ -1117,6 +1123,7 @@ class CX2Runtime:
         verification_assessment = None
         user_skip = is_explicit_verification_skip(prompt)
         quota_state = str(quota.get("budget_state", "normal"))
+        required_plan = extract_required_verification_plan(prompt)
 
         if final_raw is not None:
             raw_cmds = [
@@ -1137,7 +1144,7 @@ class CX2Runtime:
 
             status_str = str(getattr(final_raw, "status", ""))
             if status_str == "interrupted" or getattr(final_raw, "interrupt_requested", False):
-                verification_assessment = VerificationAssessment(
+                base_interrupted = VerificationAssessment(
                     status="INTERRUPTED",
                     reason="INTERRUPTED",
                     evidence_level="NONE",
@@ -1145,6 +1152,12 @@ class CX2Runtime:
                     mutation_detected=bool(getattr(final_raw, "changed_files", [])),
                     changed_files=list(getattr(final_raw, "changed_files", [])),
                     last_mutation_sequence=getattr(final_raw, "last_mutation_sequence", 0),
+                )
+                verification_assessment = _apply_required_coverage_to_assessment(
+                    base_interrupted,
+                    required_plan,
+                    raw_cmds,
+                    repo_root=repo.get("root", cwd),
                 )
             else:
                 verification_assessment = assess_turn(
@@ -1155,6 +1168,7 @@ class CX2Runtime:
                     user_skip=user_skip,
                     quota_state=quota_state,
                     repo_root=repo.get("root", cwd),
+                    required_plan=required_plan,
                 )
 
             # Verification continuation (MAX 1)
@@ -1245,7 +1259,7 @@ class CX2Runtime:
 
                 cont_status_str = str(getattr(cont_raw_result, "status", ""))
                 if cont_status_str == "interrupted" or getattr(cont_raw_result, "interrupt_requested", False):
-                    verification_assessment = VerificationAssessment(
+                    base_cont_interrupted = VerificationAssessment(
                         status="INTERRUPTED",
                         reason="INTERRUPTED",
                         evidence_level="NONE",
@@ -1254,6 +1268,12 @@ class CX2Runtime:
                         changed_files=combined_files,
                         last_mutation_sequence=combined_last_mutation,
                         turns_evaluated=2,
+                    )
+                    verification_assessment = _apply_required_coverage_to_assessment(
+                        base_cont_interrupted,
+                        required_plan,
+                        combined_cmds,
+                        repo_root=repo.get("root", cwd),
                     )
                 else:
                     verification_assessment = assess_turn(
@@ -1264,6 +1284,7 @@ class CX2Runtime:
                         user_skip=user_skip,
                         quota_state=quota_state,
                         repo_root=repo.get("root", cwd),
+                        required_plan=required_plan,
                     )
 
                 # Authoritative response is Turn 2's response

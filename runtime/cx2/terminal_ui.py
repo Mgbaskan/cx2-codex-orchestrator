@@ -1422,6 +1422,76 @@ class TerminalRenderer:
             self._line()
             return
 
+        # Required Verification Coverage Rendering
+        req_cov = assessment.get("required_coverage") if isinstance(assessment, dict) else getattr(assessment, "required_coverage", None)
+        if req_cov is not None:
+            req_tot = req_cov.get("required_total", 0) if isinstance(req_cov, dict) else getattr(req_cov, "required_total", 0)
+            if req_tot > 0:
+                p_cnt = req_cov.get("passed_count", 0) if isinstance(req_cov, dict) else getattr(req_cov, "passed_count", 0)
+                f_cnt = req_cov.get("failed_count", 0) if isinstance(req_cov, dict) else getattr(req_cov, "failed_count", 0)
+                b_cnt = req_cov.get("blocked_count", 0) if isinstance(req_cov, dict) else getattr(req_cov, "blocked_count", 0)
+                m_cnt = req_cov.get("missing_count", 0) if isinstance(req_cov, dict) else getattr(req_cov, "missing_count", 0)
+                missing_gates = req_cov.get("missing_gates", []) if isinstance(req_cov, dict) else getattr(req_cov, "missing_gates", [])
+                failed_gates = req_cov.get("failed_gates", []) if isinstance(req_cov, dict) else getattr(req_cov, "failed_gates", [])
+                blocked_gates = req_cov.get("blocked_gates", []) if isinstance(req_cov, dict) else getattr(req_cov, "blocked_gates", [])
+
+                prefix = self._bold("[doğrulama]")
+                if status == "VERIFIED":
+                    badge = self._green("VERIFIED")
+                    summary_text = f"zorunlu {req_tot}/{req_tot} kapı geçti"
+                elif status == "PARTIALLY_VERIFIED":
+                    badge = self._yellow("PARTIALLY_VERIFIED")
+                    summary_text = f"zorunlu {p_cnt}/{req_tot} kapı geçti · {m_cnt} eksik"
+                elif status == "FAILED":
+                    badge = self._red("FAILED")
+                    summary_text = f"zorunlu {p_cnt}/{req_tot} kapı geçti · {f_cnt} başarısız"
+                elif status == "BLOCKED":
+                    badge = self._red("BLOCKED")
+                    summary_text = f"zorunlu {p_cnt}/{req_tot} kapı geçti · {b_cnt} engellendi"
+                elif status == "INTERRUPTED":
+                    badge = self._yellow("KESİLDİ")
+                    summary_text = f"zorunlu {p_cnt}/{req_tot} kapı"
+                else:
+                    badge = self._yellow("UNVERIFIED")
+                    summary_text = f"zorunlu {p_cnt}/{req_tot} kapı geçti · {m_cnt} eksik"
+
+                self.stop_activity()
+                self._line()
+                self._line(f"{prefix} · {badge} · {summary_text}")
+
+                rendered_details = 0
+                max_details = 5
+                for fg in failed_gates:
+                    if rendered_details >= max_details:
+                        break
+                    surf = fg.get("surface") if isinstance(fg, dict) else getattr(fg, "surface", "")
+                    raw = fg.get("raw_command") if isinstance(fg, dict) else getattr(fg, "raw_command", "")
+                    self._line(f"  {self._red('[başarısız]')} {surf} · {raw}")
+                    rendered_details += 1
+
+                for bg in blocked_gates:
+                    if rendered_details >= max_details:
+                        break
+                    surf = bg.get("surface") if isinstance(bg, dict) else getattr(bg, "surface", "")
+                    raw = bg.get("raw_command") if isinstance(bg, dict) else getattr(bg, "raw_command", "")
+                    self._line(f"  {self._red('[engellendi]')} {surf} · {raw}")
+                    rendered_details += 1
+
+                for mg in missing_gates:
+                    if rendered_details >= max_details:
+                        break
+                    surf = mg.get("surface") if isinstance(mg, dict) else getattr(mg, "surface", "")
+                    raw = mg.get("raw_command") if isinstance(mg, dict) else getattr(mg, "raw_command", "")
+                    self._line(f"  {self._yellow('[eksik]')} {surf} · {raw}")
+                    rendered_details += 1
+
+                tot_issues = len(failed_gates) + len(blocked_gates) + len(missing_gates)
+                if tot_issues > max_details:
+                    self._line(f"  {self._dim(f'... ve {tot_issues - max_details} kapı daha')}")
+
+                self._line()
+                return
+
         self.stop_activity()
         self._line()
 

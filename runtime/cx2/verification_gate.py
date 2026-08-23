@@ -704,11 +704,15 @@ class VerificationAssessment:
     valid_evidence_commands: list[dict[str, Any]] = field(default_factory=list)
     command_outcomes: list[dict[str, Any]] = field(default_factory=list)
     audit_assessment: AuditEvidenceAssessment | None = None
+    required_coverage: Any | None = None
     last_mutation_sequence: int = 0
     turns_evaluated: int = 1
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        d = asdict(self)
+        if self.required_coverage is not None and hasattr(self.required_coverage, "to_dict"):
+            d["required_coverage"] = self.required_coverage.to_dict()
+        return d
 
 
 def normalize_file_path(path: str) -> str:
@@ -1129,6 +1133,52 @@ def is_explicit_verification_skip(prompt: str) -> bool:
     return False
 
 
+def _apply_required_coverage_to_assessment(
+    base: VerificationAssessment,
+    required_plan: Any | None,
+    command_executions: list[CommandExecutionSummary],
+    repo_root: str | Path | None = None,
+) -> VerificationAssessment:
+    if required_plan is None or not getattr(required_plan, "gates", None):
+        return base
+
+    try:
+        from required_verification import evaluate_required_coverage
+        req_cov = evaluate_required_coverage(
+            required_plan,
+            command_executions,
+            repo_root=repo_root,
+            is_interrupted=(base.status == "INTERRUPTED"),
+        )
+        base.required_coverage = req_cov
+
+        if req_cov.status == "FAILED":
+            base.status = "FAILED"
+            base.reason = "REQUIRED_GATE_FAILED"
+        elif req_cov.status == "BLOCKED":
+            base.status = "BLOCKED"
+            base.reason = "REQUIRED_GATE_BLOCKED"
+        elif req_cov.status == "INTERRUPTED":
+            base.status = "INTERRUPTED"
+            base.reason = "INTERRUPTED"
+        elif req_cov.status in ("PARTIALLY_PASSED", "INCONCLUSIVE", "UNVERIFIED"):
+            if base.status == "VERIFIED":
+                base.status = "PARTIALLY_VERIFIED"
+                base.reason = "REQUIRED_GATES_INCOMPLETE"
+            elif base.status == "NOT_APPLICABLE":
+                base.status = "PARTIALLY_VERIFIED" if req_cov.passed_count > 0 else "UNVERIFIED"
+                base.reason = "REQUIRED_GATES_INCOMPLETE"
+        elif req_cov.status == "ALL_PASSED":
+            if base.status == "NOT_APPLICABLE":
+                base.status = "VERIFIED"
+                base.reason = "ALL_REQUIRED_GATES_PASSED"
+                base.evidence_level = "STRONG"
+    except Exception:
+        pass
+
+    return base
+
+
 def assess_turn(
     *,
     changed_files: list[str],
@@ -1138,10 +1188,38 @@ def assess_turn(
     user_skip: bool = False,
     quota_state: str = "normal",
     repo_root: str | Path | None = None,
+    required_plan: Any | None = None,
 ) -> VerificationAssessment:
     """
     Core deterministic evaluation of a turn or combined turns.
     """
+    base_res = _assess_turn_core(
+        changed_files=changed_files,
+        command_executions=command_executions,
+        last_mutation_seq=last_mutation_seq,
+        is_continuation=is_continuation,
+        user_skip=user_skip,
+        quota_state=quota_state,
+        repo_root=repo_root,
+    )
+    return _apply_required_coverage_to_assessment(
+        base_res,
+        required_plan=required_plan,
+        command_executions=command_executions,
+        repo_root=repo_root,
+    )
+
+
+def _assess_turn_core(
+    *,
+    changed_files: list[str],
+    command_executions: list[CommandExecutionSummary],
+    last_mutation_seq: int,
+    is_continuation: bool = False,
+    user_skip: bool = False,
+    quota_state: str = "normal",
+    repo_root: str | Path | None = None,
+) -> VerificationAssessment:
     deduped_files = deduplicate_changed_files(changed_files, repo_root=repo_root)
     mutation_detected = bool(deduped_files)
     file_cats = set(classify_file(f) for f in deduped_files)

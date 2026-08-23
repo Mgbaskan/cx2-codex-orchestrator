@@ -1156,8 +1156,9 @@ def _apply_required_coverage_to_assessment(
             base.status = "FAILED"
             base.reason = "REQUIRED_GATE_FAILED"
         elif req_cov.status == "BLOCKED":
-            base.status = "BLOCKED"
-            base.reason = "REQUIRED_GATE_BLOCKED"
+            if base.status != "FAILED":
+                base.status = "BLOCKED"
+                base.reason = "REQUIRED_GATE_BLOCKED"
         elif req_cov.status == "INTERRUPTED":
             base.status = "INTERRUPTED"
             base.reason = "INTERRUPTED"
@@ -1165,14 +1166,10 @@ def _apply_required_coverage_to_assessment(
             if base.status == "VERIFIED":
                 base.status = "PARTIALLY_VERIFIED"
                 base.reason = "REQUIRED_GATES_INCOMPLETE"
-            elif base.status == "NOT_APPLICABLE":
-                base.status = "PARTIALLY_VERIFIED" if req_cov.passed_count > 0 else "UNVERIFIED"
-                base.reason = "REQUIRED_GATES_INCOMPLETE"
         elif req_cov.status == "ALL_PASSED":
-            if base.status == "NOT_APPLICABLE":
-                base.status = "VERIFIED"
-                base.reason = "ALL_REQUIRED_GATES_PASSED"
-                base.evidence_level = "STRONG"
+            # REQUIRED COVERAGE IS AN UPPER-BOUND ONLY:
+            # DO NOT UPGRADE base assurance status.
+            pass
     except Exception:
         pass
 

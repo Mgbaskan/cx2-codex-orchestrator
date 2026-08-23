@@ -484,7 +484,9 @@ Web:
     def test_36_model_prose_cannot_fake_coverage(self) -> None:
         """
         Synthetic model final text 'All tests passed successfully' has ZERO authority.
-        If only 1 of 8 required commands was run, coverage remains 1/8 and status is NOT VERIFIED.
+        If only 1 of 8 required commands was run:
+        Coverage is PARTIALLY_PASSED (1 passed, 7 missing).
+        Final assurance is UNVERIFIED (NOT VERIFIED).
         """
         hibrit_plan = extract_required_verification_plan("""
 QUALITY GATES
@@ -513,13 +515,16 @@ Web:
 
         self.assertNotEqual(assessment.status, "VERIFIED")
         self.assertEqual(assessment.status, "UNVERIFIED")
+        self.assertIsNotNone(assessment.required_coverage)
+        self.assertEqual(assessment.required_coverage.status, "PARTIALLY_PASSED")
         self.assertEqual(assessment.required_coverage.passed_count, 1)
         self.assertEqual(assessment.required_coverage.missing_count, 7)
 
     def test_37_read_only_task_with_required_test_gate_satisfied(self) -> None:
         """
         Read-only task with explicit required verification gate:
-        If required gate is observed and passed, assurance status is VERIFIED.
+        If required gate is observed and passed, assurance status remains NOT_APPLICABLE (DO NOT UPGRADE).
+        Required coverage is ALL_PASSED.
         """
         plan = extract_required_verification_plan("Do not modify files.\nQuality gates:\n- npm test")
         cmds = [
@@ -531,13 +536,37 @@ Web:
             last_mutation_seq=0,
             required_plan=plan,
         )
-        self.assertEqual(assessment.status, "VERIFIED")
-        self.assertEqual(assessment.reason, "ALL_REQUIRED_GATES_PASSED")
+        self.assertEqual(assessment.status, "NOT_APPLICABLE")
+        self.assertEqual(assessment.reason, "NO_MUTATION")
+        self.assertIsNotNone(assessment.required_coverage)
+        self.assertEqual(assessment.required_coverage.status, "ALL_PASSED")
+        self.assertEqual(assessment.required_coverage.passed_count, 1)
 
-    def test_38_read_only_task_with_blocked_test_gate(self) -> None:
+    def test_38_read_only_task_with_failed_test_gate(self) -> None:
+        """
+        Read-only task with explicit required verification gate:
+        If required gate fails (e.g. test failure report), assurance status is FAILED (conservative downgrade).
+        Required coverage is FAILED.
+        """
+        plan = extract_required_verification_plan("Do not modify files.\nQuality gates:\n- npm test")
+        cmds = [
+            CommandExecutionSummary(command="npm test", exit_code=1, categories=["TEST"], sequence=1, classification_text="FAIL tests/index.test.ts 1 failed"),
+        ]
+        assessment = assess_turn(
+            changed_files=[],
+            command_executions=cmds,
+            last_mutation_seq=0,
+            required_plan=plan,
+        )
+        self.assertEqual(assessment.status, "FAILED")
+        self.assertEqual(assessment.reason, "REQUIRED_GATE_FAILED")
+        self.assertEqual(assessment.required_coverage.status, "FAILED")
+
+    def test_39_read_only_task_with_blocked_test_gate(self) -> None:
         """
         Read-only task with explicit required verification gate:
         If required gate is blocked (e.g. permission denied), assurance status is BLOCKED.
+        Required coverage is BLOCKED.
         """
         plan = extract_required_verification_plan("Do not modify files.\nQuality gates:\n- npm test")
         cmds = [
@@ -551,6 +580,98 @@ Web:
         )
         self.assertEqual(assessment.status, "BLOCKED")
         self.assertEqual(assessment.reason, "REQUIRED_GATE_BLOCKED")
+        self.assertEqual(assessment.required_coverage.status, "BLOCKED")
+
+    def test_40_coverage_one_of_eight_is_partially_passed(self) -> None:
+        """1 passed out of 8 required gates -> coverage status is PARTIALLY_PASSED."""
+        hibrit_plan = extract_required_verification_plan("""
+QUALITY GATES
+Mobile/root:
+- npx tsc --noEmit
+- npx jest --runInBand
+Backend:
+- npm run lint
+- npx jest --runInBand
+- npm run build
+Web:
+- npm run lint
+- npm run type-check
+- npm run build
+""")
+        cmds = [
+            {"command": "cd backend && npm run build", "exit_code": 0, "categories": ["BUILD"], "sequence": 1},
+        ]
+        cov = evaluate_required_coverage(hibrit_plan, cmds)
+        self.assertEqual(cov.status, "PARTIALLY_PASSED")
+        self.assertEqual(cov.passed_count, 1)
+        self.assertEqual(cov.missing_count, 7)
+
+    def test_41_base_unverified_plus_all_passed_remains_unverified(self) -> None:
+        """Base UNVERIFIED + ALL_PASSED required coverage -> remains UNVERIFIED."""
+        plan = extract_required_verification_plan("Quality gates:\n- npm run lint")
+        cmds = [
+            CommandExecutionSummary(command="npm run lint", exit_code=0, categories=["LINT"], sequence=1),
+        ]
+        # user_skip yields base UNVERIFIED
+        assessment = assess_turn(
+            changed_files=["src/app.ts"],
+            command_executions=cmds,
+            last_mutation_seq=0,
+            user_skip=True,
+            required_plan=plan,
+        )
+        self.assertEqual(assessment.status, "UNVERIFIED")
+        self.assertEqual(assessment.reason, "USER_REQUESTED_SKIP")
+        self.assertEqual(assessment.required_coverage.status, "ALL_PASSED")
+
+    def test_42_base_partially_verified_plus_all_passed_remains_partially_verified(self) -> None:
+        """Base PARTIALLY_VERIFIED + ALL_PASSED required coverage -> remains PARTIALLY_VERIFIED."""
+        plan = extract_required_verification_plan("Quality gates:\n- npm run build")
+        cmds = [
+            CommandExecutionSummary(command="npm run build", exit_code=0, categories=["BUILD"], sequence=2),
+        ]
+        # Mutation on package.json (CONFIG_BUILD) + build pass => base PARTIALLY_VERIFIED
+        assessment = assess_turn(
+            changed_files=["package.json"],
+            command_executions=cmds,
+            last_mutation_seq=1,
+            required_plan=plan,
+        )
+        self.assertEqual(assessment.status, "PARTIALLY_VERIFIED")
+        self.assertEqual(assessment.required_coverage.status, "ALL_PASSED")
+
+    def test_43_base_failed_plus_all_passed_remains_failed(self) -> None:
+        """Base FAILED (from mutation test failure) + ALL_PASSED required coverage -> remains FAILED."""
+        plan = extract_required_verification_plan("Quality gates:\n- npm run lint")
+        cmds = [
+            CommandExecutionSummary(command="npm run lint", exit_code=0, categories=["LINT"], sequence=2),
+            CommandExecutionSummary(command="npm test", exit_code=1, categories=["TEST"], sequence=3, classification_text="FAIL test.ts 1 failed"),
+        ]
+        assessment = assess_turn(
+            changed_files=["src/app.ts"],
+            command_executions=cmds,
+            last_mutation_seq=1,
+            is_continuation=True,
+            required_plan=plan,
+        )
+        self.assertEqual(assessment.status, "FAILED")
+        self.assertEqual(assessment.required_coverage.status, "ALL_PASSED")
+
+    def test_44_base_not_applicable_plus_all_passed_remains_not_applicable(self) -> None:
+        """Base NOT_APPLICABLE (docs only) + ALL_PASSED required coverage -> remains NOT_APPLICABLE."""
+        plan = extract_required_verification_plan("Quality gates:\n- npm run lint")
+        cmds = [
+            CommandExecutionSummary(command="npm run lint", exit_code=0, categories=["LINT"], sequence=2),
+        ]
+        assessment = assess_turn(
+            changed_files=["README.md"],
+            command_executions=cmds,
+            last_mutation_seq=1,
+            required_plan=plan,
+        )
+        self.assertEqual(assessment.status, "NOT_APPLICABLE")
+        self.assertEqual(assessment.reason, "DOCS_ONLY_MUTATION")
+        self.assertEqual(assessment.required_coverage.status, "ALL_PASSED")
 
 
 if __name__ == "__main__":

@@ -1374,54 +1374,6 @@ class TerminalRenderer:
             reason = getattr(assessment, "reason", "")
             audit_assessment = getattr(assessment, "audit_assessment", None)
 
-        # Read-only audit assurance rendering
-        if status == "NOT_APPLICABLE" and not changed_files:
-            if not audit_assessment:
-                return
-
-            if isinstance(audit_assessment, dict):
-                a_status = audit_assessment.get("status", "UNVERIFIED")
-                tot_checks = audit_assessment.get("total_checks", 0)
-                p_cnt = audit_assessment.get("passed_count", 0)
-                f_cnt = audit_assessment.get("failed_count", 0)
-                b_cnt = audit_assessment.get("blocked_count", 0)
-            else:
-                a_status = getattr(audit_assessment, "status", "UNVERIFIED")
-                tot_checks = getattr(audit_assessment, "total_checks", 0)
-                p_cnt = getattr(audit_assessment, "passed_count", 0)
-                f_cnt = getattr(audit_assessment, "failed_count", 0)
-                b_cnt = getattr(audit_assessment, "blocked_count", 0)
-
-            if tot_checks == 0 and a_status != "INTERRUPTED":
-                return
-
-            self.stop_activity()
-            self._line()
-
-            audit_prefix = self._bold("[audit]")
-            if a_status == "COMPLETE":
-                a_badge = self._green("COMPLETE")
-            elif a_status == "PARTIAL":
-                a_badge = self._yellow("PARTIAL")
-            elif a_status == "INTERRUPTED":
-                a_badge = self._yellow("INTERRUPTED")
-            else:
-                a_badge = self._yellow("UNVERIFIED")
-
-            audit_parts = [audit_prefix, a_badge]
-            if tot_checks > 0:
-                audit_parts.append(f"{tot_checks} {'check' if tot_checks == 1 else 'checks'}")
-                if p_cnt > 0:
-                    audit_parts.append(f"{p_cnt} passed")
-                if f_cnt > 0:
-                    audit_parts.append(f"{f_cnt} failed")
-                if b_cnt > 0:
-                    audit_parts.append(f"{b_cnt} blocked")
-
-            self._line(" · ".join(audit_parts))
-            self._line()
-            return
-
         # Required Verification Coverage Rendering
         req_cov = assessment.get("required_coverage") if isinstance(assessment, dict) else getattr(assessment, "required_coverage", None)
         if req_cov is not None:
@@ -1439,6 +1391,9 @@ class TerminalRenderer:
                 if status == "VERIFIED":
                     badge = self._green("VERIFIED")
                     summary_text = f"zorunlu {req_tot}/{req_tot} kapı geçti"
+                elif status == "NOT_APPLICABLE":
+                    badge = self._dim("NOT_APPLICABLE")
+                    summary_text = f"zorunlu {p_cnt}/{req_tot} kapı geçti" + (f" · {m_cnt} eksik" if m_cnt > 0 else "")
                 elif status == "PARTIALLY_VERIFIED":
                     badge = self._yellow("PARTIALLY_VERIFIED")
                     summary_text = f"zorunlu {p_cnt}/{req_tot} kapı geçti · {m_cnt} eksik"
@@ -1489,8 +1444,94 @@ class TerminalRenderer:
                 if tot_issues > max_details:
                     self._line(f"  {self._dim(f'... ve {tot_issues - max_details} kapı daha')}")
 
+                # If there is also an audit assessment on read-only turn, render it as well
+                if status == "NOT_APPLICABLE" and audit_assessment:
+                    if isinstance(audit_assessment, dict):
+                        a_status = audit_assessment.get("status", "UNVERIFIED")
+                        tot_checks = audit_assessment.get("total_checks", 0)
+                        a_p_cnt = audit_assessment.get("passed_count", 0)
+                        a_f_cnt = audit_assessment.get("failed_count", 0)
+                        a_b_cnt = audit_assessment.get("blocked_count", 0)
+                    else:
+                        a_status = getattr(audit_assessment, "status", "UNVERIFIED")
+                        tot_checks = getattr(audit_assessment, "total_checks", 0)
+                        a_p_cnt = getattr(audit_assessment, "passed_count", 0)
+                        a_f_cnt = getattr(audit_assessment, "failed_count", 0)
+                        a_b_cnt = getattr(audit_assessment, "blocked_count", 0)
+
+                    if tot_checks > 0 or a_status == "INTERRUPTED":
+                        audit_prefix = self._bold("[audit]")
+                        if a_status == "COMPLETE":
+                            a_badge = self._green("COMPLETE")
+                        elif a_status == "PARTIAL":
+                            a_badge = self._yellow("PARTIAL")
+                        elif a_status == "INTERRUPTED":
+                            a_badge = self._yellow("INTERRUPTED")
+                        else:
+                            a_badge = self._yellow("UNVERIFIED")
+
+                        audit_parts = [audit_prefix, a_badge]
+                        if tot_checks > 0:
+                            audit_parts.append(f"{tot_checks} {'check' if tot_checks == 1 else 'checks'}")
+                            if a_p_cnt > 0:
+                                audit_parts.append(f"{a_p_cnt} passed")
+                            if a_f_cnt > 0:
+                                audit_parts.append(f"{a_f_cnt} failed")
+                            if a_b_cnt > 0:
+                                audit_parts.append(f"{a_b_cnt} blocked")
+
+                        self._line(" · ".join(audit_parts))
+
                 self._line()
                 return
+
+        # Read-only audit assurance rendering
+        if status == "NOT_APPLICABLE" and not changed_files:
+            if not audit_assessment:
+                return
+
+            if isinstance(audit_assessment, dict):
+                a_status = audit_assessment.get("status", "UNVERIFIED")
+                tot_checks = audit_assessment.get("total_checks", 0)
+                p_cnt = audit_assessment.get("passed_count", 0)
+                f_cnt = audit_assessment.get("failed_count", 0)
+                b_cnt = audit_assessment.get("blocked_count", 0)
+            else:
+                a_status = getattr(audit_assessment, "status", "UNVERIFIED")
+                tot_checks = getattr(audit_assessment, "total_checks", 0)
+                p_cnt = getattr(audit_assessment, "passed_count", 0)
+                f_cnt = getattr(audit_assessment, "failed_count", 0)
+                b_cnt = getattr(audit_assessment, "blocked_count", 0)
+
+            if tot_checks == 0 and a_status != "INTERRUPTED":
+                return
+
+            self.stop_activity()
+            self._line()
+
+            audit_prefix = self._bold("[audit]")
+            if a_status == "COMPLETE":
+                a_badge = self._green("COMPLETE")
+            elif a_status == "PARTIAL":
+                a_badge = self._yellow("PARTIAL")
+            elif a_status == "INTERRUPTED":
+                a_badge = self._yellow("INTERRUPTED")
+            else:
+                a_badge = self._yellow("UNVERIFIED")
+
+            audit_parts = [audit_prefix, a_badge]
+            if tot_checks > 0:
+                audit_parts.append(f"{tot_checks} {'check' if tot_checks == 1 else 'checks'}")
+                if p_cnt > 0:
+                    audit_parts.append(f"{p_cnt} passed")
+                if f_cnt > 0:
+                    audit_parts.append(f"{f_cnt} failed")
+                if b_cnt > 0:
+                    audit_parts.append(f"{b_cnt} blocked")
+
+            self._line(" · ".join(audit_parts))
+            self._line()
+            return
 
         self.stop_activity()
         self._line()

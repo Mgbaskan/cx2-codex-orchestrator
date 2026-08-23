@@ -368,7 +368,7 @@ Web:
 
 CX2 deterministically extracts the required gates and matches them against actual commands executed by the Codex App Server:
 
-- **Deterministic Gate Extraction**: Quality gates under explicit verification headings (`QUALITY GATES`, `DOĞRULAMA KAPILARI`) are extracted without model calls.
+- **Deterministic Gate Extraction**: Quality gates under explicit verification/quality-gate headings (e.g. `QUALITY GATES`, `REQUIRED VERIFICATION`, `VERIFICATION GATES`, `CHECKS TO RUN`, `DOĞRULAMA KAPILARI`) are extracted without model calls. Concrete executable command lines are parsed conservatively; vague prose instructions (e.g. "run all tests") do not create required gates.
 - **Strict Surface / Working-Directory Isolation**: Commands executed in one subproject directory do not satisfy gates in another. For example, `backend -> npm run build` (executed with `cwd="backend"`) is distinct evidence from `web -> npm run build` (executed with `cwd="web"`).
 - **CWD Provenance Preservation**: The CX2 runtime preserves working directory provenance from the App Server through the execution ledger to ensure monorepo commands match their intended surface.
 - **Non-Authoritative Model Prose**: Assistant prose claims (e.g. "All tests passed") cannot satisfy required gates. Only observed App Server command executions with matching command identity, surface working directory, and exit code 0 count as passed.

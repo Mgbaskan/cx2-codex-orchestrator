@@ -44,9 +44,9 @@ For whole-project and read-only inspections:
 
 ## Required Verification Contract
 
-When users specify required quality gates in their prompt under an explicit section heading (`QUALITY GATES`, `DOĞRULAMA KAPILARI`), CX2 activates the Required Verification Contract:
+When users specify required quality gates in their prompt under an explicit verification heading (e.g. `QUALITY GATES`, `REQUIRED VERIFICATION`, `VERIFICATION GATES`, `CHECKS TO RUN`, `DOĞRULAMA KAPILARI`), CX2 activates the Required Verification Contract:
 
-1. **Deterministic Gate Extraction**: Gates are extracted directly from the prompt text without model calls.
+1. **Deterministic Gate Extraction**: Gates are extracted directly from the prompt text without model calls. Concrete executable command lines are parsed conservatively; vague prose instructions (e.g. "run all tests") do not create required gates.
 2. **Execution Ledger Matching**: Actual commands executed by the Codex App Server are matched against required gates by:
    - **Command Identity**: Script names, test flags, and subcommands.
    - **Surface / CWD Isolation**: Working directory provenance is strictly enforced. An execution in `backend` (e.g. `npm run build`) does not satisfy a `web` gate (`npm run build`).

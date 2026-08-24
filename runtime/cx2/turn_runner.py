@@ -332,8 +332,52 @@ def safe_agent_message_text(
     )
 
 
+MAX_COMMAND_OUTPUT_BYTES_RETAINED = 512 * 1024
+
+
+def extract_command_diagnostic_text(
+    item: Any,
+    accumulated_stream: str = "",
+    max_bytes: int = MAX_COMMAND_OUTPUT_BYTES_RETAINED,
+) -> str:
+    """
+    Deterministically extract diagnostic text for a command execution.
+
+    Precedence:
+      1. Non-empty inline fields on completed item:
+         - aggregatedOutput (standard Codex App Server completion payload)
+         - output
+         - error
+         - stderr
+      2. Bounded accumulated outputDelta stream for the same item ID
+
+    The result is strictly bounded to max_bytes to prevent unbounded memory retention.
+    """
+    raw = ""
+    if isinstance(item, dict):
+        raw = (
+            item.get("aggregatedOutput")
+            or item.get("output")
+            or item.get("error")
+            or item.get("stderr")
+            or ""
+        )
+        if not isinstance(raw, str):
+            raw = str(raw) if raw is not None else ""
+
+    if not raw.strip() and isinstance(accumulated_stream, str):
+        raw = accumulated_stream
+
+    raw_bytes = raw.encode("utf-8", errors="replace")
+    if len(raw_bytes) > max_bytes:
+        raw = raw_bytes[:max_bytes].decode("utf-8", errors="replace")
+
+    return raw
+
+
 def safe_item_summary(
     item: Any,
+    accumulated_stream: str = "",
 ) -> dict[str, Any]:
 
     if not isinstance(
@@ -369,9 +413,12 @@ def safe_item_summary(
 
     # Bounded output snippet for error / status diagnosis
     if result.get("type") == "commandExecution":
-        raw_output = item.get("output") or item.get("error") or item.get("stderr") or ""
-        if isinstance(raw_output, str) and raw_output.strip():
-            result["output_snippet"] = raw_output.strip()[:500]
+        diagnostic_text = extract_command_diagnostic_text(
+            item,
+            accumulated_stream=accumulated_stream,
+        )
+        if diagnostic_text.strip():
+            result["output_snippet"] = diagnostic_text.strip()[:500]
 
     # Do not include raw reasoning content.
     if (
@@ -2444,15 +2491,39 @@ class StreamingTurnRunner:
                 )
             ):
 
-                result.command_output[
-                    item_id
-                ] = (
-                    result.command_output.get(
-                        item_id,
-                        "",
-                    )
-                    + delta
+                curr = result.command_output.get(
+                    item_id,
+                    "",
                 )
+                curr_bytes_len = len(
+                    curr.encode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                )
+
+                if curr_bytes_len < MAX_COMMAND_OUTPUT_BYTES_RETAINED:
+                    remaining = (
+                        MAX_COMMAND_OUTPUT_BYTES_RETAINED
+                        - curr_bytes_len
+                    )
+                    delta_bytes = delta.encode(
+                        "utf-8",
+                        errors="replace",
+                    )
+                    if len(delta_bytes) > remaining:
+                        delta_to_add = (
+                            delta_bytes[:remaining].decode(
+                                "utf-8",
+                                errors="replace",
+                            )
+                        )
+                    else:
+                        delta_to_add = delta
+
+                    result.command_output[
+                        item_id
+                    ] = curr + delta_to_add
 
                 if self.live:
                     _CX2_TERMINAL.command_output_delta(
@@ -2581,9 +2652,31 @@ class StreamingTurnRunner:
                 "item"
             )
 
+            item_id = (
+                str(
+                    completed_item.get("id")
+                    or ""
+                )
+                if isinstance(
+                    completed_item,
+                    dict,
+                )
+                else ""
+            )
+
+            accumulated_stream = (
+                result.command_output.get(
+                    item_id,
+                    "",
+                )
+                if item_id
+                else ""
+            )
+
             completed_summary = (
                 safe_item_summary(
-                    completed_item
+                    completed_item,
+                    accumulated_stream=accumulated_stream,
                 )
             )
 
@@ -2613,9 +2706,10 @@ class StreamingTurnRunner:
                 cats = classify_command(cmd_str)
                 masked = is_command_masked(cmd_str)
                 disp_cmd = unwrap_display_command(cmd_str)
-                raw_out = ""
-                if isinstance(completed_item, dict):
-                    raw_out = str(completed_item.get("output") or completed_item.get("error") or completed_item.get("stderr") or "")
+                raw_out = extract_command_diagnostic_text(
+                    completed_item,
+                    accumulated_stream=accumulated_stream,
+                )
                 cmd_cwd = completed_summary.get("cwd")
 
                 cmd_record = {

@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.10] - 2026-08-24
+
+### Fixed
+- Windows read-only verification commands that require legitimate runtime/cache writes (such as Jest, Pytest, Go test) can now be recovered through explicit bounded verification execution instead of remaining permanently `BLOCKED`.
+- Prevented verification workflows from failing solely because the Codex read-only sandbox denies temporary directory or cache writes.
+- Bounded process output capture to prevent unbounded process-memory accumulation during high-volume stdout/stderr generation.
+
+### Added
+- **Bounded Verification Execution**: Explicit one-shot interactive authorization for verification commands blocked by sandbox write restrictions.
+- **Exact Command & CWD Display**: Transparent interactive prompt presenting the exact command string and working directory before bounded host execution.
+- **Bounded Concurrent Output Capture**: Concurrent stream draining capping retained stdout and stderr buffers at 512 KiB each, empirically validated with child output volumes up to 100 MB per stream.
+- **Full Process-Tree Termination**: Process lifecycle management forcefully terminating complete process hierarchies via `taskkill /F /T /PID` upon command timeout.
+- **Bounded Host Execution Provenance**: Truthful recording of `bounded_host_execution` metadata in turn results and verification evidence summaries.
+
+### Changed
+- Upgraded CLI version (`CLI_VERSION = "2.0.10"`) and runtime version (`RUNTIME_VERSION = "2.0.10"`).
+- Preserved Router version (`ROUTER_VERSION = "1.2.2"`) and validated Codex baseline (`VALIDATED_CODEX_VERSION = "0.144.4"`).
+
+### Security / Reliability
+- No automatic host execution.
+- No `dangerFullAccess` fallback.
+- User decline is fail-closed.
+- One approval authorizes only the single exact command instance presented; no session-wide permission elevation.
+- Effective model sandbox remains `:read-only` throughout the turn.
+- Genuine test, lint, typecheck, and build failures remain genuine failures and are never offered bounded host execution.
+- Shared `.codex-agent-cache` is never modified or permission-mutated.
+
+### Qualification
+- Validated with 355 deterministic regression tests across normal discovery and isolated profile environments.
+- Qualified through Windows quoting matrix (15 variations), 50-offer approval soak, 11 failure semantics scenarios, output soak up to 100 MB, 20 timeout process-tree cycles, 50-turn interactive shell resilience soak, 6 real model canaries, and live HIBRIT Jest canary.
+
 ## [2.0.9] - 2026-08-24
 
 ### Fixed

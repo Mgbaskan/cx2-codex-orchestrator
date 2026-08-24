@@ -72,7 +72,7 @@ from required_verification import (
 
 
 EXPECTED_ROUTER_VERSION = "1.2.2"
-RUNTIME_VERSION = "2.0.9"
+RUNTIME_VERSION = "2.0.10"
 
 DEFAULT_TURN_TIMEOUTS: dict[str, float] = {
     "routine": 300.0,

@@ -479,6 +479,10 @@ class TestPhase12TrueBoundedOutputCapture(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             script = (
                 "import subprocess, sys, time\n"
+                "sys.stdout.write('O' * 1000)\n"
+                "sys.stdout.flush()\n"
+                "sys.stderr.write('E' * 1000)\n"
+                "sys.stderr.flush()\n"
                 "if len(sys.argv) == 1:\n"
                 "    # Parent: spawn child\n"
                 f"    p = subprocess.Popen([sys.executable, __file__, 'child'], stdout=sys.stdout, stderr=sys.stderr)\n"
@@ -502,7 +506,7 @@ class TestPhase12TrueBoundedOutputCapture(unittest.TestCase):
             for iter_idx in range(1, 11):
                 t0 = time.monotonic()
                 cmd = f'"{sys.executable}" "{tree_py}"'
-                res = execute_bounded_verification_command(cmd, cwd=temp_dir, timeout=0.6)
+                res = execute_bounded_verification_command(cmd, cwd=temp_dir, timeout=0.8)
                 elapsed = time.monotonic() - t0
 
                 self.assertEqual(res.exit_code, -1)

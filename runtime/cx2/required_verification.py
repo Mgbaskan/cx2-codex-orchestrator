@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-CX2 2.0.9 Required Verification Module.
+CX2 2.0.10 Required Verification Module.
 
 Deterministic, pure model-free extraction, normalization, and coverage tracking
 for explicit user-requested quality and verification gates.

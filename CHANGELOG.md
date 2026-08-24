@@ -7,6 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.11] - 2026-08-25
+
+### Fixed
+- Live Codex App Server command failures whose stderr/stdout arrives through `item/commandExecution/outputDelta` are now correctly included in verification classification when `item/completed` lacks inline output.
+- Sandbox-write failures such as `EPERM` on legitimate verification temporary directory and cache writes can now reach the explicit bounded-verification approval path in the real streamed App Server lifecycle.
+- Genuine test, typecheck, lint, and build failures take precedence over permission noise and are not offered bounded-host retry.
+
+### Reliability
+- Command diagnostic retention uses a bounded per-command head+tail window: first 64 KiB + most recent 448 KiB, retaining at most 512 KiB of diagnostic bytes per command. Retained command-diagnostic memory is bounded per command and independent of total streamed byte volume for that command.
+- Late diagnostic events received after `item/completed` may update audit classification records but cannot reopen bounded-host authorization.
+- Interleaved command items retain strictly isolated diagnostic and authorization state with zero cross-command contamination.
+
+### Changed
+- Upgraded CLI version (`CLI_VERSION = "2.0.11"`) and runtime version (`RUNTIME_VERSION = "2.0.11"`).
+- Preserved Router version (`ROUTER_VERSION = "1.2.2"`) and validated Codex baseline (`VALIDATED_CODEX_VERSION = "0.144.4"`).
+
+### Security
+- Bounded host execution remains explicit one-shot user authorization only.
+- No automatic host execution.
+- No `dangerFullAccess` fallback.
+- Effective model turn remains `:read-only`.
+- Post-completion late evidence fails closed for authorization.
+
+### Qualification
+- Validated with 383 deterministic regression tests across normal discovery and isolated profile environments.
+- Qualified through 32 sandbox-block soak cycles, 42 failure-conflict cycles, 36 late-evidence fail-closed variations, 50 interleaved multi-command items, large stream soak up to 100 MB, 14 live App Server turns, and live HIBRIT Jest canary.
+
 ## [2.0.10] - 2026-08-24
 
 ### Fixed

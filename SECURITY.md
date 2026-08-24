@@ -26,6 +26,7 @@ When submitting a security report or diagnostic logs:
 
 | Version | Supported |
 |:---|:---:|
+| 2.0.11 | :white_check_mark: |
 | 2.0.10 | :white_check_mark: |
 | 2.0.9 | :white_check_mark: |
 | < 2.0.9 | :x: |
@@ -35,10 +36,12 @@ When submitting a security report or diagnostic logs:
 - **Fail-Closed Mutation Authorization**: Under Windows Codex 0.144.4 compatibility mode, effective execution operates in `read-only` sandbox with `approval_policy = "on-request"`. Any file mutation or command execution outside read-only bounds requires explicit one-shot user approval. User decline is fail-closed and preserves the filesystem.
 - **Explicit Bounded Verification Authorization**: When verification commands are blocked by sandbox write restrictions (e.g. `SANDBOX_DENIED`, `WORKSPACE_WRITE_REQUIRED`, `TEMP_CACHE_UNAVAILABLE`), CX2 does not automatically execute host commands. One-shot execution requires explicit affirmative user approval (`[1] Bu kez izin ver`). The exact command string and working directory are presented to the user. User decline is fail-closed.
 - **Model Sandbox Invariant**: Bounded verification authorization applies strictly one-shot to the single command instance approved. The active model turn remains in `:read-only` sandbox throughout execution. `dangerFullAccess` is never used.
+- **Failure Precedence Over Permission Noise**: Conclusive test, lint, typecheck, or build failures take precedence over sandbox/permission noise. Commands with genuine failure evidence are marked `FAILED` and are never eligible for bounded host execution offers.
+- **Fail-Closed Late Evidence Authorization Gate**: The `item/completed` event serves as the authoritative decision point for bounded-verification host offers. Late stream deltas arriving after `item/completed` may update telemetry and audit classifications but strictly fail closed and cannot reopen authorization or create new host-execution offers.
 - **No Global Host Fallback**: Under no circumstances does CX2 automatically downgrade or escalate a failed sandbox into unrestricted host execution (`dangerFullAccess`).
 - **Bounded Approval Escalation**: Interactive approval escalation attempts are bounded per turn (maximum 6 prompts per turn) to prevent approval-loop denial of service or terminal starvation.
-- **Evidence-Based Gate Verification**: Verification status (`VERIFIED`) strictly requires observed zero exit codes from legitimate test execution without masking operators. Genuine test, lint, typecheck, or build failures remain `FAILED` and are never offered bounded host execution. Approvals and prose do not substitute for empirical execution evidence.
-- **Bounded Concurrent Stream Capture**: Child process stdout and stderr streams are drained concurrently to avoid pipe deadlocks, retaining at most 512 KiB per stream (empirically validated with child output volumes up to 100 MB per stream).
+- **Evidence-Based Gate Verification**: Verification status (`VERIFIED`) strictly requires observed zero exit codes from legitimate test execution without masking operators. Approvals and prose do not substitute for empirical execution evidence.
+- **Bounded Command Diagnostic Retention**: Command output and diagnostic streams retain a bounded head+tail window (first 64 KiB + most recent 448 KiB, retaining at most 512 KiB per command), empirically exercised with child output streams up to 100 MB per command.
 - **Process-Tree Termination on Timeout**: Command timeouts forcefully terminate the complete process hierarchy to prevent orphaned background processes.
 - **Shared Cache Protection**: The shared `.codex-agent-cache` directory is never modified, permission-altered, or written to outside standard Codex operation.
 

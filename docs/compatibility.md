@@ -28,7 +28,7 @@ A failure or incompatibility in an optional capability does not disable the enti
   - `effective_sandbox`: resolved to `read-only` compatibility mode.
   - `approval_policy`: remains `on-request`.
   - Inspections, searches, and reads run sandboxed without friction. Actual file mutations prompt the user for explicit one-shot approval (`item/fileChange/requestApproval` or `item/commandExecution/requestApproval`).
-  - In CX2 2.0.10, verification commands blocked solely by sandbox write restrictions (e.g. `SANDBOX_DENIED`, `WORKSPACE_WRITE_REQUIRED`, `TEMP_CACHE_UNAVAILABLE`) are recovered via explicit one-shot bounded verification execution with transparent command/CWD prompts, while the active model turn remains in read-only sandbox mode.
+  - In CX2 2.0.11, verification commands blocked solely by sandbox write restrictions (e.g. `SANDBOX_DENIED`, `WORKSPACE_WRITE_REQUIRED`, `TEMP_CACHE_UNAVAILABLE`) are classified truthfully from streamed command output (`outputDelta`) and recovered via explicit one-shot bounded verification execution with transparent command/CWD prompts, while the active model turn remains in read-only sandbox mode.
   - `cx doctor` reports `windows_workspace_write: DEGRADED` (`windows_0.144.4_workspace_write_degraded`).
 - **Native Thread Deletion**: On newer Codex state schemas (v42+ where `agent_jobs` is dropped), native delete is safely degraded to fail-closed (`SUPPORTED_WITH_DEGRADATION`). CX2 never mutates or downgrades the shared SQLite schema to force compatibility; `/archive` is recommended instead.
 

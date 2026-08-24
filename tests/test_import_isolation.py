@@ -31,6 +31,7 @@ class TestImportIsolation(unittest.TestCase):
             "verification_gate",
             "selection_context",
             "input_adapter",
+            "cx_home",
         ]
 
         for mod_name in modules_to_verify:

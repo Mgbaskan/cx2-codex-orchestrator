@@ -91,8 +91,16 @@ ensure_valid_unicode = normalize_external_text
 
 from openai_codex import ApprovalMode, Codex, CodexConfig, Sandbox
 
+try:
+    from cx_home import resolve_cx_home
+except ImportError:
+    _runtime_dir = str(Path(__file__).resolve().parent.parent / "runtime" / "cx2")
+    if _runtime_dir not in sys.path:
+        sys.path.insert(0, _runtime_dir)
+    from cx_home import resolve_cx_home
 
-CX_HOME = Path.home() / ".cx"
+
+CX_HOME = resolve_cx_home()
 POLICY_FILE = CX_HOME / "policy.json"
 DB_FILE = CX_HOME / "data" / "usage.sqlite3"
 LOG_FILE = CX_HOME / "logs" / "cx.log"
@@ -195,8 +203,7 @@ def cx_runtime_env() -> dict[str, str]:
 
 
 CCE_EXE = (
-    Path.home()
-    / ".cx"
+    CX_HOME
     / "bin"
     / "cce.exe"
 )

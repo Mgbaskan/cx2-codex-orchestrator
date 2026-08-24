@@ -16,8 +16,9 @@ from typing import (
     Protocol,
 )
 
+from cx_home import resolve_cx_home
 
-CX_HOME = Path.home() / ".cx"
+CX_HOME = resolve_cx_home()
 STAGE = CX_HOME / "runtime" / "cx2"
 
 if str(STAGE) not in sys.path:

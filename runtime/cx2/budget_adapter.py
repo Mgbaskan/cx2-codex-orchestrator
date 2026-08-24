@@ -4,8 +4,9 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from cx_home import resolve_cx_home
 
-CX_HOME = Path.home() / ".cx"
+CX_HOME = resolve_cx_home()
 STAGE = CX_HOME / "runtime" / "cx2"
 PRODUCTION_SRC = CX_HOME / "src"
 

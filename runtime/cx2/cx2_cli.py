@@ -29,7 +29,9 @@ if hasattr(sys.stderr, "reconfigure"):
         pass
 
 
-CX_HOME = Path.home() / ".cx"
+from cx_home import resolve_cx_home
+
+CX_HOME = resolve_cx_home()
 CX2_HOME = CX_HOME / "runtime" / "cx2"
 PRODUCTION_SRC = CX_HOME / "src"
 

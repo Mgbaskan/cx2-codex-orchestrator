@@ -14,8 +14,10 @@ from pathlib import Path
 import sys
 from typing import Any, Callable
 
+from cx_home import resolve_cx_home
+
 # CX_HOME and import bootstrap
-CX_HOME = Path.home() / ".cx"
+CX_HOME = resolve_cx_home()
 PRODUCTION_SRC = CX_HOME / "src"
 
 for candidate in (

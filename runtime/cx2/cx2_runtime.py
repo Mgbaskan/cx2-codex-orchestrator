@@ -8,8 +8,9 @@ import subprocess
 import sys
 from typing import Any
 
+from cx_home import resolve_cx_home
 
-CX_HOME = Path.home() / ".cx"
+CX_HOME = resolve_cx_home()
 CX2_HOME = CX_HOME / "runtime" / "cx2"
 PRODUCTION_SRC = CX_HOME / "src"
 

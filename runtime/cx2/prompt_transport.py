@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 """
-CX2 2.0.8 Prompt Transport Layer.
+CX2 2.0.9 Prompt Transport Layer.
 
 Responsible solely for prompt ingestion, decoding, size validation,
 UTF-8/BOM handling, and multiline capture.

@@ -7,6 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.9] - 2026-08-24
+
+### Fixed
+- Interactive CX shell no longer terminates on ordinary turn-level runtime errors such as turn timeouts and App Server transport failures.
+- App Server process death is detected promptly instead of waiting for the full turn timeout.
+- Final completion events buffered during App Server exit are reconciled before declaring infrastructure failure.
+- ripgrep exit code 1/no-match is presented neutrally (`[no-match]`) instead of as a generic command failure.
+- `npm run type-check` is recognized correctly by verification classification.
+- Unquoted `cmd /c ...` display-command unwrapping is handled safely.
+- Repeated approval requests are bounded and explicit declines can be remembered safely within a turn.
+- Human time spent at approval prompts no longer consumes the model/turn computation deadline.
+- Codex CLI 0.144.4 Windows `workspaceWrite` degradation is mitigated through a safe read-only compatibility execution mode with explicit mutation approval.
+
+### Changed
+- Upgraded CLI version (`CLI_VERSION = "2.0.9"`) and runtime version (`RUNTIME_VERSION = "2.0.9"`).
+- Preserved Router version (`ROUTER_VERSION = "1.2.2"`) and validated Codex baseline (`VALIDATED_CODEX_VERSION = "0.144.4"`).
+
+### Security / Reliability
+- No global host execution fallback.
+- No automatic mutation approval.
+- Compatibility fallback is fail-closed.
+- Requested router sandbox remains truthful (`workspace-write`) while runtime effective sandbox is separately represented (`read-only`).
+- Approval escalation attempts are bounded per turn and reset on each new turn.
+
+### Qualification
+- Validated with 336 deterministic regression tests across discovery and isolated profile environments.
+- Qualified with Windows adversarial runtime soak and six controlled live model canaries on disposable fixtures.
+
 ## [2.0.8] - 2026-08-23
 
 ### Added

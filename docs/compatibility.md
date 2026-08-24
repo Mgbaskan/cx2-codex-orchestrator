@@ -23,6 +23,12 @@ CX2 utilizes a centralized, model-free compatibility abstraction (`runtime/cx2/c
 A failure or incompatibility in an optional capability does not disable the entire CX2 runtime:
 
 - **Core App Server**: If `0.144.4` or compatible, core session, turn processing, and streaming remain `SUPPORTED`.
+- **Windows Workspace-Write Sandbox (Codex 0.144.4)**: On the qualified Windows environment with Codex CLI 0.144.4, native `workspaceWrite` sandbox initialization reproduced a deterministic pre-command hang. CX2 2.0.9 decouples the requested router sandbox from effective execution:
+  - `requested_sandbox`: remains `workspace-write` in the route manifest (preserving truthful task classification for policy and verification).
+  - `effective_sandbox`: resolved to `read-only` compatibility mode.
+  - `approval_policy`: remains `on-request`.
+  - Inspections, searches, and reads run sandboxed without friction. Actual file mutations and command executions prompt the user for explicit one-shot approval (`item/fileChange/requestApproval` or `item/commandExecution/requestApproval`).
+  - `cx doctor` reports `windows_workspace_write: DEGRADED` (`windows_0.144.4_workspace_write_degraded`).
 - **Native Thread Deletion**: On newer Codex state schemas (v42+ where `agent_jobs` is dropped), native delete is safely degraded to fail-closed (`SUPPORTED_WITH_DEGRADATION`). CX2 never mutates or downgrades the shared SQLite schema to force compatibility; `/archive` is recommended instead.
 
 ## Non-Windows Platforms

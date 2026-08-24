@@ -139,6 +139,13 @@ class TurnRunResult:
         default_factory=dict
     )
 
+    command_accumulators: dict[
+        str,
+        Any,
+    ] = field(
+        default_factory=dict
+    )
+
     started_items: list[
         dict[str, Any]
     ] = field(
@@ -333,11 +340,117 @@ def safe_agent_message_text(
 
 
 MAX_COMMAND_OUTPUT_BYTES_RETAINED = 512 * 1024
+MAX_HEAD_BYTES = 64 * 1024
+MAX_TAIL_BYTES = MAX_COMMAND_OUTPUT_BYTES_RETAINED - MAX_HEAD_BYTES
+
+
+class BoundedDiagnosticAccumulator:
+    """
+    Deterministic Head + Tail streaming diagnostic accumulator.
+
+    Guarantees:
+      1. Memory usage per command is strictly bounded <= MAX_COMMAND_OUTPUT_BYTES_RETAINED + small buffer.
+      2. If total stream bytes <= MAX_COMMAND_OUTPUT_BYTES_RETAINED, retains the full stream verbatim.
+      3. If total stream bytes > MAX_COMMAND_OUTPUT_BYTES_RETAINED:
+         - Retains the first 64 KiB in head (preserves initial command context / startup logs).
+         - Retains the most recent 448 KiB in rolling tail (preserves late errors / diagnostics).
+         - Assembles as: head + f"\n... [truncated {truncated_bytes} bytes] ...\n" + tail
+      4. Multibyte UTF-8 integrity is maintained across chunk boundaries.
+    """
+
+    def __init__(
+        self,
+        max_total_bytes: int = MAX_COMMAND_OUTPUT_BYTES_RETAINED,
+        max_head_bytes: int = MAX_HEAD_BYTES,
+    ) -> None:
+        self.max_total_bytes = max_total_bytes
+        self.max_head_bytes = min(max_head_bytes, max_total_bytes)
+        self.max_tail_bytes = max_total_bytes - self.max_head_bytes
+
+        self.total_bytes_streamed: int = 0
+        self._head_bytes = bytearray()
+        self._tail_bytes = bytearray()
+        self._is_split = False
+
+    def push(self, delta: str | bytes) -> None:
+        if not delta:
+            return
+        raw_bytes = (
+            delta.encode("utf-8", errors="replace")
+            if isinstance(delta, str)
+            else delta
+        )
+        delta_len = len(raw_bytes)
+        self.total_bytes_streamed += delta_len
+
+        if not self._is_split:
+            if len(self._head_bytes) + delta_len <= self.max_total_bytes:
+                self._head_bytes.extend(raw_bytes)
+                return
+            else:
+                self._is_split = True
+                combined = self._head_bytes + raw_bytes
+                self._head_bytes = combined[:self.max_head_bytes]
+                tail_part = combined[self.max_head_bytes:]
+                if len(tail_part) > self.max_tail_bytes:
+                    self._tail_bytes = tail_part[-self.max_tail_bytes:]
+                else:
+                    self._tail_bytes = bytearray(tail_part)
+                return
+
+        self._tail_bytes.extend(raw_bytes)
+        if len(self._tail_bytes) > self.max_tail_bytes:
+            self._tail_bytes = self._tail_bytes[-self.max_tail_bytes:]
+
+    def get_diagnostic_text(self) -> str:
+        if not self._is_split:
+            return self._head_bytes.decode("utf-8", errors="replace")
+
+        head_str = self._head_bytes.decode("utf-8", errors="replace")
+        tail_str = self._tail_bytes.decode("utf-8", errors="replace")
+        truncated_bytes = max(
+            0,
+            self.total_bytes_streamed
+            - len(self._head_bytes)
+            - len(self._tail_bytes),
+        )
+
+        if truncated_bytes > 0:
+            sep = f"\n... [truncated {truncated_bytes} bytes] ...\n"
+            return head_str + sep + tail_str
+        return head_str + tail_str
+
+
+def extract_bounded_window_text(
+    raw_text: str,
+    max_total_bytes: int = MAX_COMMAND_OUTPUT_BYTES_RETAINED,
+    max_head_bytes: int = MAX_HEAD_BYTES,
+) -> str:
+    """
+    Extract a deterministic Head + Tail window from static text if it exceeds max_total_bytes.
+    """
+    if not raw_text:
+        return ""
+    raw_bytes = raw_text.encode("utf-8", errors="replace")
+    if len(raw_bytes) <= max_total_bytes:
+        return raw_text
+
+    max_head = min(max_head_bytes, max_total_bytes)
+    max_tail = max_total_bytes - max_head
+
+    head_bytes = raw_bytes[:max_head]
+    tail_bytes = raw_bytes[-max_tail:]
+    truncated_bytes = len(raw_bytes) - max_head - max_tail
+
+    head_str = head_bytes.decode("utf-8", errors="replace")
+    tail_str = tail_bytes.decode("utf-8", errors="replace")
+    sep = f"\n... [truncated {truncated_bytes} bytes] ...\n"
+    return head_str + sep + tail_str
 
 
 def extract_command_diagnostic_text(
     item: Any,
-    accumulated_stream: str = "",
+    accumulated_stream: Any = "",
     max_bytes: int = MAX_COMMAND_OUTPUT_BYTES_RETAINED,
 ) -> str:
     """
@@ -351,7 +464,8 @@ def extract_command_diagnostic_text(
          - stderr
       2. Bounded accumulated outputDelta stream for the same item ID
 
-    The result is strictly bounded to max_bytes to prevent unbounded memory retention.
+    Head + Tail bounded window is applied to preserve early context and late diagnostics
+    while strictly capping memory retention.
     """
     raw = ""
     if isinstance(item, dict):
@@ -365,19 +479,20 @@ def extract_command_diagnostic_text(
         if not isinstance(raw, str):
             raw = str(raw) if raw is not None else ""
 
-    if not raw.strip() and isinstance(accumulated_stream, str):
-        raw = accumulated_stream
+    if raw.strip():
+        return extract_bounded_window_text(raw, max_total_bytes=max_bytes)
 
-    raw_bytes = raw.encode("utf-8", errors="replace")
-    if len(raw_bytes) > max_bytes:
-        raw = raw_bytes[:max_bytes].decode("utf-8", errors="replace")
+    if isinstance(accumulated_stream, BoundedDiagnosticAccumulator):
+        return accumulated_stream.get_diagnostic_text()
+    elif isinstance(accumulated_stream, str) and accumulated_stream.strip():
+        return extract_bounded_window_text(accumulated_stream, max_total_bytes=max_bytes)
 
-    return raw
+    return ""
 
 
 def safe_item_summary(
     item: Any,
-    accumulated_stream: str = "",
+    accumulated_stream: Any = "",
 ) -> dict[str, Any]:
 
     if not isinstance(
@@ -2491,39 +2606,22 @@ class StreamingTurnRunner:
                 )
             ):
 
-                curr = result.command_output.get(
-                    item_id,
-                    "",
-                )
-                curr_bytes_len = len(
-                    curr.encode(
-                        "utf-8",
-                        errors="replace",
+                if item_id not in result.command_accumulators:
+                    result.command_accumulators[item_id] = BoundedDiagnosticAccumulator(
+                        max_total_bytes=MAX_COMMAND_OUTPUT_BYTES_RETAINED,
+                        max_head_bytes=MAX_HEAD_BYTES,
                     )
-                )
 
-                if curr_bytes_len < MAX_COMMAND_OUTPUT_BYTES_RETAINED:
-                    remaining = (
-                        MAX_COMMAND_OUTPUT_BYTES_RETAINED
-                        - curr_bytes_len
-                    )
-                    delta_bytes = delta.encode(
-                        "utf-8",
-                        errors="replace",
-                    )
-                    if len(delta_bytes) > remaining:
-                        delta_to_add = (
-                            delta_bytes[:remaining].decode(
-                                "utf-8",
-                                errors="replace",
-                            )
-                        )
-                    else:
-                        delta_to_add = delta
+                result.command_accumulators[item_id].push(delta)
+                updated_text = result.command_accumulators[item_id].get_diagnostic_text()
+                result.command_output[item_id] = updated_text
 
-                    result.command_output[
-                        item_id
-                    ] = curr + delta_to_add
+                # Resilient late-event reconciliation if item/completed was already processed
+                for cmd_exec in result.command_executions:
+                    if cmd_exec.get("id") == item_id:
+                        cmd_exec["classification_text"] = updated_text
+                        if updated_text.strip():
+                            cmd_exec["output_snippet"] = updated_text.strip()[:500]
 
                 if self.live:
                     _CX2_TERMINAL.command_output_delta(
@@ -2664,19 +2762,14 @@ class StreamingTurnRunner:
                 else ""
             )
 
-            accumulated_stream = (
-                result.command_output.get(
-                    item_id,
-                    "",
-                )
-                if item_id
-                else ""
-            )
+            accum = result.command_accumulators.get(item_id)
+            if accum is None:
+                accum = result.command_output.get(item_id, "")
 
             completed_summary = (
                 safe_item_summary(
                     completed_item,
-                    accumulated_stream=accumulated_stream,
+                    accumulated_stream=accum,
                 )
             )
 
@@ -2708,11 +2801,12 @@ class StreamingTurnRunner:
                 disp_cmd = unwrap_display_command(cmd_str)
                 raw_out = extract_command_diagnostic_text(
                     completed_item,
-                    accumulated_stream=accumulated_stream,
+                    accumulated_stream=accum,
                 )
                 cmd_cwd = completed_summary.get("cwd")
 
                 cmd_record = {
+                    "id": item_id,
                     "command": cmd_str,
                     "exit_code": exit_code,
                     "duration_ms": dur_ms,

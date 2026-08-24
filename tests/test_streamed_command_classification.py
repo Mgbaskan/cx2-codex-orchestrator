@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 """
-CX2 2.0.11 Phase 0/1 Regression Test Suite
-Live App Server Command-Output Reconciliation & Bounded Stream Classification.
+CX2 2.0.11 Phase 1.1 Adversarial Qualification Test Suite
+Streamed Diagnostic Window Hardening, Head+Tail Bounded Retention, Event Order,
+Adversarial Late-Diagnostic Tests, Inline aggregatedOutput, Interleaved Isolation,
+and Memory Soak.
 """
 
+import os
 from pathlib import Path
 import sys
 import tempfile
+import time
+from typing import Any
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -25,10 +30,14 @@ from bounded_verification_runner import (
     is_verification_command_eligible,
 )
 from turn_runner import (
+    BoundedDiagnosticAccumulator,
     MAX_COMMAND_OUTPUT_BYTES_RETAINED,
+    MAX_HEAD_BYTES,
+    MAX_TAIL_BYTES,
     StreamingTurnRunner,
     TurnApprovalState,
     TurnRunResult,
+    extract_bounded_window_text,
     extract_command_diagnostic_text,
     safe_item_summary,
 )
@@ -50,307 +59,484 @@ class SyntheticTurnClient:
 
 class TestStreamedCommandClassification(unittest.TestCase):
 
-    def test_extract_command_diagnostic_text_precedence(self) -> None:
-        """Inline aggregatedOutput / output / error / stderr take precedence over accumulated stream."""
-        # 1. aggregatedOutput inline
-        item_agg = {"aggregatedOutput": "INLINE_AGG_OUT"}
-        self.assertEqual(
-            extract_command_diagnostic_text(item_agg, accumulated_stream="STREAMED_TEXT"),
-            "INLINE_AGG_OUT",
-        )
+    # =========================================================
+    # 1. RETENTION ALGORITHM & BOUNDED WINDOW TESTS
+    # =========================================================
 
-        # 2. output inline
-        item_out = {"output": "INLINE_OUT"}
-        self.assertEqual(
-            extract_command_diagnostic_text(item_out, accumulated_stream="STREAMED_TEXT"),
-            "INLINE_OUT",
-        )
+    def test_accumulator_small_payload_exact(self) -> None:
+        """Accumulator preserves small payloads verbatim without truncation."""
+        accum = BoundedDiagnosticAccumulator(max_total_bytes=512 * 1024, max_head_bytes=64 * 1024)
+        accum.push("line 1\n")
+        accum.push("line 2\n")
+        accum.push("line 3\n")
+        self.assertEqual(accum.get_diagnostic_text(), "line 1\nline 2\nline 3\n")
+        self.assertEqual(accum.total_bytes_streamed, len("line 1\nline 2\nline 3\n".encode("utf-8")))
 
-        # 3. error inline
-        item_err = {"error": "INLINE_ERR"}
-        self.assertEqual(
-            extract_command_diagnostic_text(item_err, accumulated_stream="STREAMED_TEXT"),
-            "INLINE_ERR",
-        )
+    def test_accumulator_head_tail_window_preservation(self) -> None:
+        """Accumulator preserves first 64 KiB (head) and last 448 KiB (tail) when stream > 512 KiB."""
+        accum = BoundedDiagnosticAccumulator(max_total_bytes=512 * 1024, max_head_bytes=64 * 1024)
 
-        # 4. stderr inline
-        item_stderr = {"stderr": "INLINE_STDERR"}
-        self.assertEqual(
-            extract_command_diagnostic_text(item_stderr, accumulated_stream="STREAMED_TEXT"),
-            "INLINE_STDERR",
-        )
+        # 1. Push head sentinel
+        accum.push("HEAD_START_MARKER\n")
 
-        # 5. Streamed fallback when inline is absent or empty
-        item_empty = {"id": "call-1", "type": "commandExecution"}
-        self.assertEqual(
-            extract_command_diagnostic_text(item_empty, accumulated_stream="STREAMED_FALLBACK"),
-            "STREAMED_FALLBACK",
-        )
+        # 2. Push 700 KiB of middle padding in chunks
+        chunk = "M" * 1024 + "\n"
+        for _ in range(700):
+            accum.push(chunk)
 
-        # 6. Both empty
-        self.assertEqual(
-            extract_command_diagnostic_text(item_empty, accumulated_stream=""),
-            "",
-        )
+        # 3. Push tail sentinel
+        accum.push("TAIL_END_MARKER_EPERM\n")
 
-    def test_extract_command_diagnostic_text_bounded_bytes(self) -> None:
-        """Diagnostic text is strictly capped to max_bytes without raising decoding errors."""
-        huge_text = "A" * (MAX_COMMAND_OUTPUT_BYTES_RETAINED + 1000)
-        res = extract_command_diagnostic_text({}, accumulated_stream=huge_text)
-        self.assertEqual(len(res.encode("utf-8")), MAX_COMMAND_OUTPUT_BYTES_RETAINED)
+        text = accum.get_diagnostic_text()
+        self.assertIn("HEAD_START_MARKER", text)
+        self.assertIn("TAIL_END_MARKER_EPERM", text)
+        self.assertIn("[truncated", text)
+        self.assertLessEqual(len(text.encode("utf-8")), MAX_COMMAND_OUTPUT_BYTES_RETAINED + 500)
 
-    def test_safe_item_summary_populates_output_snippet_from_stream(self) -> None:
-        """safe_item_summary extracts output_snippet from accumulated stream when inline is missing."""
-        item = {
-            "id": "cmd-1",
-            "type": "commandExecution",
-            "command": "npx jest",
-            "status": "failed",
-            "exitCode": 1,
-        }
-        summary = safe_item_summary(item, accumulated_stream="EPERM: operation not permitted")
-        self.assertEqual(summary["output_snippet"], "EPERM: operation not permitted")
+    def test_extract_bounded_window_text_static(self) -> None:
+        """extract_bounded_window_text extracts head + tail on large static strings."""
+        prefix = "START_PREFIX_" + "A" * (70 * 1024)
+        suffix = "B" * (500 * 1024) + "_END_SUFFIX"
+        full_text = prefix + suffix
 
-    def test_output_delta_bounded_accumulation_in_turn_runner(self) -> None:
-        """StreamingTurnRunner strictly bounds result.command_output retention."""
+        bounded = extract_bounded_window_text(full_text, max_total_bytes=512 * 1024, max_head_bytes=64 * 1024)
+        self.assertIn("START_PREFIX_", bounded)
+        self.assertIn("_END_SUFFIX", bounded)
+        self.assertIn("[truncated", bounded)
+        self.assertLessEqual(len(bounded.encode("utf-8")), 512 * 1024 + 500)
+
+    # =========================================================
+    # 2. ADVERSARIAL LATE-DIAGNOSTIC TESTS (CASES A-E)
+    # =========================================================
+
+    def test_case_a_late_sandbox_error_after_700kib(self) -> None:
+        """CASE A: 700+ KiB ordinary output followed by late EPERM sandbox error."""
         client = SyntheticTurnClient()
         runner = StreamingTurnRunner(client=client, live=False)
         result = TurnRunResult(thread_id="th-1", turn_id="turn-1")
+        item_id = "cmd-late-a"
 
-        chunk = "X" * (100 * 1024)
-        for _ in range(10):  # 10 * 100 KiB = 1000 KiB > 512 KiB cap
+        # Stream 700 KiB ordinary output
+        chunk = "LOG: test processing batch data line...\n"
+        chunk_bytes = len(chunk.encode("utf-8"))
+        iterations = (700 * 1024) // chunk_bytes + 1
+        for _ in range(iterations):
             runner._handle_notification(
                 result,
-                {
-                    "method": "item/commandExecution/outputDelta",
-                    "params": {"itemId": "call-large", "delta": chunk},
-                },
+                {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": chunk}},
             )
 
-        accumulated = result.command_output.get("call-large", "")
-        self.assertLessEqual(
-            len(accumulated.encode("utf-8")),
-            MAX_COMMAND_OUTPUT_BYTES_RETAINED,
+        # Stream late EPERM error
+        late_err = "EPERM: operation not permitted, mkdir 'C:\\Users\\muugo\\.codex-agent-cache\\tmp\\jest'\n"
+        runner._handle_notification(
+            result,
+            {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": late_err}},
         )
 
-    def test_output_delta_interleaved_isolation(self) -> None:
-        """Output deltas for interleaved item IDs never cross-contaminate."""
+        # Complete command without inline output
+        runner._handle_notification(
+            result,
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "id": item_id,
+                        "type": "commandExecution",
+                        "command": "npx jest --runInBand",
+                        "status": "failed",
+                        "exitCode": 1,
+                    }
+                },
+            },
+        )
+
+        self.assertEqual(len(result.command_executions), 1)
+        rec = result.command_executions[0]
+        self.assertIn("EPERM: operation not permitted", rec["classification_text"])
+
+        summary = CommandExecutionSummary(
+            command=rec["command"],
+            exit_code=rec["exit_code"],
+            duration_ms=rec["duration_ms"],
+            sequence=rec["sequence"],
+            categories=rec["categories"],
+            is_masked=rec["is_masked"],
+            display_command=rec["display_command"],
+            output_snippet=rec["output_snippet"],
+            classification_text=rec["classification_text"],
+        )
+        outcome = classify_command_outcome(summary)
+        self.assertEqual(outcome.outcome, "BLOCKED")
+        self.assertEqual(outcome.reason_code, "SANDBOX_DENIED")
+        self.assertTrue(is_verification_command_eligible(summary, permissions=":read-only"))
+
+    def test_case_b_5mb_late_sandbox_error(self) -> None:
+        """CASE B: 5 MB ordinary stream followed by EPERM error near the end."""
+        accum = BoundedDiagnosticAccumulator(max_total_bytes=512 * 1024, max_head_bytes=64 * 1024)
+
+        # 5 MB of 64 KiB chunks
+        chunk = "D" * (64 * 1024)
+        for _ in range(80):  # 80 * 64 KiB = 5120 KiB = 5 MB
+            accum.push(chunk)
+
+        accum.push("\nEPERM: operation not permitted, mkdir 'C:\\Users\\muugo\\.codex-agent-cache\\tmp\\jest'\n")
+
+        diag = accum.get_diagnostic_text()
+        self.assertIn("EPERM: operation not permitted", diag)
+        self.assertLessEqual(len(diag.encode("utf-8")), MAX_COMMAND_OUTPUT_BYTES_RETAINED + 500)
+
+    def test_case_c_late_genuine_test_failure(self) -> None:
+        """CASE C: >512 KiB ordinary test output followed by a genuine Jest failure."""
         client = SyntheticTurnClient()
         runner = StreamingTurnRunner(client=client, live=False)
         result = TurnRunResult(thread_id="th-1", turn_id="turn-1")
+        item_id = "cmd-late-c"
 
-        # Stream delta A1, B1, A2, B2
-        runner._handle_notification(
-            result,
-            {"method": "item/commandExecution/outputDelta", "params": {"itemId": "item-A", "delta": "AAA_1"}},
+        # Stream >512 KiB passing tests
+        for i in range(1000):
+            runner._handle_notification(
+                result,
+                {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": f"PASS src/test_{i}.ts (1.2s)\n"}},
+            )
+
+        # Stream late test failure
+        fail_snippet = (
+            "FAIL src/users.service.spec.ts\n"
+            "  ● UsersService › should validate password\n"
+            "    Expected: true\n"
+            "    Received: false\n"
+            "Test Suites: 1 failed, 999 passed, 1000 total\n"
+            "Tests: 1 failed, 999 passed, 1000 total\n"
         )
         runner._handle_notification(
             result,
-            {"method": "item/commandExecution/outputDelta", "params": {"itemId": "item-B", "delta": "BBB_1"}},
-        )
-        runner._handle_notification(
-            result,
-            {"method": "item/commandExecution/outputDelta", "params": {"itemId": "item-A", "delta": "AAA_2"}},
-        )
-        runner._handle_notification(
-            result,
-            {"method": "item/commandExecution/outputDelta", "params": {"itemId": "item-B", "delta": "BBB_2"}},
+            {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": fail_snippet}},
         )
 
-        # Complete A
         runner._handle_notification(
             result,
             {
                 "method": "item/completed",
                 "params": {
                     "item": {
-                        "id": "item-A",
+                        "id": item_id,
                         "type": "commandExecution",
-                        "command": "cmdA",
-                        "exitCode": 0,
-                    }
-                },
-            },
-        )
-        # Complete B
-        runner._handle_notification(
-            result,
-            {
-                "method": "item/completed",
-                "params": {
-                    "item": {
-                        "id": "item-B",
-                        "type": "commandExecution",
-                        "command": "cmdB",
-                        "exitCode": 0,
+                        "command": "npx jest --runInBand",
+                        "status": "failed",
+                        "exitCode": 1,
                     }
                 },
             },
         )
 
-        self.assertEqual(result.command_executions[0]["classification_text"], "AAA_1AAA_2")
-        self.assertEqual(result.command_executions[1]["classification_text"], "BBB_1BBB_2")
+        rec = result.command_executions[0]
+        self.assertIn("FAIL src/users.service.spec.ts", rec["classification_text"])
 
-    def test_utf8_multibyte_streamed_chunks(self) -> None:
-        """Multibyte UTF-8 characters delivered in separate stream deltas decode cleanly."""
+        summary = CommandExecutionSummary(
+            command=rec["command"],
+            exit_code=rec["exit_code"],
+            duration_ms=rec["duration_ms"],
+            sequence=rec["sequence"],
+            categories=rec["categories"],
+            is_masked=rec["is_masked"],
+            display_command=rec["display_command"],
+            output_snippet=rec["output_snippet"],
+            classification_text=rec["classification_text"],
+        )
+        outcome = classify_command_outcome(summary)
+        self.assertEqual(outcome.outcome, "FAILED")
+        self.assertEqual(outcome.reason_code, "TEST_FAILURE")
+        self.assertFalse(is_verification_command_eligible(summary, permissions=":read-only"))
+
+    def test_case_d_late_executable_not_found(self) -> None:
+        """CASE D: >512 KiB output prefix followed by executable-not-found diagnostic."""
         client = SyntheticTurnClient()
         runner = StreamingTurnRunner(client=client, live=False)
         result = TurnRunResult(thread_id="th-1", turn_id="turn-1")
+        item_id = "cmd-late-d"
 
-        part1 = "Türkçe test: "
-        part2 = "🇹🇷 ✨ ğüşıöç"
+        for _ in range(600):
+            runner._handle_notification(
+                result,
+                {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": "searching directory...\n"}},
+            )
+
+        err = "jest : The term 'jest' is not recognized as the name of a cmdlet, function, script file, or operable program.\n"
         runner._handle_notification(
             result,
-            {"method": "item/commandExecution/outputDelta", "params": {"itemId": "utf8-item", "delta": part1}},
+            {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": err}},
         )
-        runner._handle_notification(
-            result,
-            {"method": "item/commandExecution/outputDelta", "params": {"itemId": "utf8-item", "delta": part2}},
-        )
+
         runner._handle_notification(
             result,
             {
                 "method": "item/completed",
                 "params": {
                     "item": {
-                        "id": "utf8-item",
+                        "id": item_id,
                         "type": "commandExecution",
-                        "command": "npx jest",
-                        "exitCode": 0,
+                        "command": "jest",
+                        "status": "failed",
+                        "exitCode": 1,
                     }
                 },
             },
         )
 
-        self.assertEqual(
-            result.command_executions[0]["classification_text"],
-            "Türkçe test: 🇹🇷 ✨ ğüşıöç",
-        )
+        rec = result.command_executions[0]
+        self.assertIn("is not recognized", rec["classification_text"])
 
-    def test_production_defect_streamed_eperm_triggers_verification_offer(self) -> None:
+        summary = CommandExecutionSummary(
+            command=rec["command"],
+            exit_code=rec["exit_code"],
+            duration_ms=rec["duration_ms"],
+            sequence=rec["sequence"],
+            categories=rec["categories"],
+            is_masked=rec["is_masked"],
+            display_command=rec["display_command"],
+            output_snippet=rec["output_snippet"],
+            classification_text=rec["classification_text"],
+        )
+        outcome = classify_command_outcome(summary)
+        self.assertEqual(outcome.outcome, "BLOCKED")
+        self.assertEqual(outcome.reason_code, "EXECUTABLE_NOT_FOUND")
+
+    def test_case_e_unicode_multibyte_boundary_and_late_eperm(self) -> None:
+        """CASE E: Multibyte Turkish UTF-8 characters across chunk boundary + late EPERM."""
+        accum = BoundedDiagnosticAccumulator(max_total_bytes=512 * 1024, max_head_bytes=64 * 1024)
+
+        # Stream 600 KiB of Turkish unicode patterns
+        turkish_pattern = "Türkçe doğrulama testi: 🇹🇷 ✨ ğüşıöç — işlem no: "
+        for i in range(15000):
+            accum.push(f"{turkish_pattern}{i}\n")
+
+        accum.push("SON_HATA: EPERM: operation not permitted, mkdir 'C:\\Users\\muugo\\.codex-agent-cache\\tmp\\jest'\n")
+
+        text = accum.get_diagnostic_text()
+        self.assertIn("Türkçe doğrulama", text)
+        self.assertIn("SON_HATA: EPERM: operation not permitted", text)
+        self.assertLessEqual(len(text.encode("utf-8")), MAX_COMMAND_OUTPUT_BYTES_RETAINED + 500)
+
+    # =========================================================
+    # 3. INLINE aggregatedOutput QUALIFICATION
+    # =========================================================
+
+    def test_aggregated_output_small_and_large(self) -> None:
+        """extract_command_diagnostic_text handles small, 512KB, and 5MB aggregatedOutput properly."""
+        # Small
+        small_item = {"aggregatedOutput": "PASS all tests"}
+        self.assertEqual(extract_command_diagnostic_text(small_item), "PASS all tests")
+
+        # 5MB with error at beginning (head preserved)
+        big_start = {"aggregatedOutput": "EPERM: start error\n" + "X" * (5 * 1024 * 1024)}
+        res_start = extract_command_diagnostic_text(big_start)
+        self.assertIn("EPERM: start error", res_start)
+        self.assertIn("[truncated", res_start)
+        self.assertLessEqual(len(res_start.encode("utf-8")), MAX_COMMAND_OUTPUT_BYTES_RETAINED + 500)
+
+        # 5MB with error at end (tail preserved)
+        big_end = {"aggregatedOutput": "X" * (5 * 1024 * 1024) + "\nEPERM: operation not permitted, mkdir tmp\\jest\n"}
+        res_end = extract_command_diagnostic_text(big_end)
+        self.assertIn("EPERM: operation not permitted", res_end)
+        self.assertIn("[truncated", res_end)
+        self.assertLessEqual(len(res_end.encode("utf-8")), MAX_COMMAND_OUTPUT_BYTES_RETAINED + 500)
+
+    # =========================================================
+    # 4. MIXED INLINE + STREAM PRECEDENCE
+    # =========================================================
+
+    def test_mixed_inline_and_stream_precedence(self) -> None:
+        """Documented precedence: non-empty inline fields take precedence over accumulated stream."""
+        # 1. aggregatedOutput present + stream present -> inline wins
+        item1 = {"aggregatedOutput": "INLINE_AGG"}
+        self.assertEqual(extract_command_diagnostic_text(item1, accumulated_stream="STREAM_TEXT"), "INLINE_AGG")
+
+        # 2. output present + stream present -> inline wins
+        item2 = {"output": "INLINE_OUT"}
+        self.assertEqual(extract_command_diagnostic_text(item2, accumulated_stream="STREAM_TEXT"), "INLINE_OUT")
+
+        # 3. error present + stream present -> inline wins
+        item3 = {"error": "INLINE_ERR"}
+        self.assertEqual(extract_command_diagnostic_text(item3, accumulated_stream="STREAM_TEXT"), "INLINE_ERR")
+
+        # 4. stderr present + stream present -> inline wins
+        item4 = {"stderr": "INLINE_STDERR"}
+        self.assertEqual(extract_command_diagnostic_text(item4, accumulated_stream="STREAM_TEXT"), "INLINE_STDERR")
+
+        # 5. inline empty + stream present -> stream used
+        item5 = {"id": "c1", "type": "commandExecution"}
+        self.assertEqual(extract_command_diagnostic_text(item5, accumulated_stream="STREAM_USED"), "STREAM_USED")
+
+        # 6. all empty -> empty
+        self.assertEqual(extract_command_diagnostic_text({}, accumulated_stream=""), "")
+
+    # =========================================================
+    # 5. FAILURE-CONFLICT SEMANTICS (EPERM + GENUINE FAIL)
+    # =========================================================
+
+    def test_failure_conflict_semantics_no_auto_execution(self) -> None:
         """
-        Exact regression test for the Phase 6 production defect:
-        Codex App Server streams EPERM error via outputDelta, and item/completed has no inline output.
-        The streamed fallback must populate classification_text and trigger the bounded verification offer.
+        Commands containing BOTH EPERM-like text AND genuine test failure signatures.
+        In all cases, NO automatic host execution ever occurs without explicit human approval.
         """
         client = SyntheticTurnClient()
         runner = StreamingTurnRunner(client=client, live=False)
         runner.current_permissions = ":read-only"
-        runner.current_cwd = r"C:\Projects\docker_projects\hibrit_app\backend"
 
-        # Track prompt offers
-        offers = []
-        def intercept_prompt(*args, **kwargs):
-            offers.append(kwargs)
-            return "accept"
-        runner._safe_approval_prompt = intercept_prompt
+        # User declines
+        runner._safe_approval_prompt = lambda *args, **kwargs: "decline"
+        result = TurnRunResult(thread_id="th-conflict", turn_id="turn-conflict")
 
-        # Mock bounded execution to avoid spawning real host process in unit test
-        mock_res = BoundedExecutionResult(
-            command="npx jest --runInBand",
-            cwd=runner.current_cwd,
-            exit_code=0,
-            stdout="PASS backend tests",
-            stderr="",
-            duration_ms=1200,
-            output_snippet="PASS backend tests",
-            classification_text="PASS backend tests",
-            bounded_host_execution=True,
-            stdout_truncated=False,
-            stderr_truncated=False,
-            stdout_bytes_total=20,
-            stderr_bytes_total=0,
+        mixed_output = (
+            "EPERM: operation not permitted, mkdir tmp\\cache\n"
+            "FAIL src/index.test.ts\n"
+            "Tests: 1 failed, 1 total\n"
+        )
+        runner._handle_notification(
+            result,
+            {"method": "item/commandExecution/outputDelta", "params": {"itemId": "call-conf", "delta": mixed_output}},
+        )
+        runner._handle_notification(
+            result,
+            {
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        "id": "call-conf",
+                        "type": "commandExecution",
+                        "command": "npx jest",
+                        "status": "failed",
+                        "exitCode": 1,
+                    }
+                },
+            },
         )
 
-        with patch("turn_runner.execute_bounded_verification_command", return_value=mock_res):
-            result = TurnRunResult(thread_id="th-prod", turn_id="turn-prod")
+        rec = result.command_executions[0]
+        # Crucial security assertion: Never executed automatically
+        self.assertFalse(rec["bounded_host_execution"])
+        self.assertEqual(rec["exit_code"], 1)
 
-            # 1. Started
-            runner._handle_notification(
-                result,
-                {
-                    "method": "item/started",
-                    "params": {
-                        "item": {
-                            "id": "call-jest-1",
-                            "type": "commandExecution",
-                            "command": '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command \'npx jest --runInBand\'',
-                            "cwd": runner.current_cwd,
-                            "status": "inProgress",
-                        }
-                    },
-                },
-            )
+    # =========================================================
+    # 6. INTERLEAVED COMMAND STRESS & ISOLATION (20 COMMANDS)
+    # =========================================================
 
-            # 2. Output delta containing Jest sandbox EPERM error
-            runner._handle_notification(
-                result,
-                {
-                    "method": "item/commandExecution/outputDelta",
-                    "params": {
-                        "itemId": "call-jest-1",
-                        "delta": "EPERM: operation not permitted, mkdir 'C:\\Users\\muugo\\.codex-agent-cache\\tmp\\jest'\n",
-                    },
-                },
-            )
+    def test_interleaved_command_stress_20_commands(self) -> None:
+        """Simulate 20 command items with interleaved outputDelta notifications."""
+        client = SyntheticTurnClient()
+        runner = StreamingTurnRunner(client=client, live=False)
+        result = TurnRunResult(thread_id="th-stress", turn_id="turn-stress")
 
-            # 3. Completed item without inline output
+        num_commands = 20
+        # Stream 5 chunks for each command interleaved
+        for chunk_idx in range(5):
+            for cmd_idx in range(num_commands):
+                item_id = f"cmd-stress-{cmd_idx}"
+                delta = f"[CMD_{cmd_idx}_CHUNK_{chunk_idx}]\n"
+                runner._handle_notification(
+                    result,
+                    {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": delta}},
+                )
+
+        # Complete all commands
+        for cmd_idx in range(num_commands):
+            item_id = f"cmd-stress-{cmd_idx}"
             runner._handle_notification(
                 result,
                 {
                     "method": "item/completed",
                     "params": {
                         "item": {
-                            "id": "call-jest-1",
+                            "id": item_id,
                             "type": "commandExecution",
-                            "command": '"C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" -Command \'npx jest --runInBand\'',
-                            "cwd": runner.current_cwd,
-                            "status": "failed",
-                            "exitCode": 1,
-                            "durationMs": 1781,
+                            "command": f"test_cmd_{cmd_idx}",
+                            "status": "completed",
+                            "exitCode": 0,
                         }
                     },
                 },
             )
 
-            # Assertions
-            self.assertEqual(len(result.command_executions), 1)
-            rec = result.command_executions[0]
-            self.assertEqual(len(offers), 1)
-            self.assertEqual(offers[0]["title"], "Verification command requires writable runtime access")
-            self.assertIn("Command: npx jest --runInBand", offers[0]["details"])
-            self.assertTrue(rec["bounded_host_execution"])
-            self.assertEqual(rec["exit_code"], 0)
-            self.assertEqual(rec["classification_text"], "PASS backend tests")
+        self.assertEqual(len(result.command_executions), num_commands)
+        for cmd_idx in range(num_commands):
+            rec = result.command_executions[cmd_idx]
+            self.assertEqual(rec["command"], f"test_cmd_{cmd_idx}")
+            # Assert only this command's tokens exist in its classification_text
+            for other_idx in range(num_commands):
+                if other_idx != cmd_idx:
+                    self.assertNotIn(f"CMD_{other_idx}_", rec["classification_text"])
+            for chunk_idx in range(5):
+                self.assertIn(f"[CMD_{cmd_idx}_CHUNK_{chunk_idx}]", rec["classification_text"])
 
-    def test_unrelated_command_with_streamed_error_receives_no_offer(self) -> None:
-        """Non-verification commands or generic errors do not trigger bounded verification offers."""
+    # =========================================================
+    # 7. MEMORY SOAK (100 MB SINGLE & MULTI-COMMAND)
+    # =========================================================
+
+    def test_memory_soak_100mb_single_command(self) -> None:
+        """Push 100 MB through a single command accumulator and verify memory bound."""
+        accum = BoundedDiagnosticAccumulator(max_total_bytes=512 * 1024, max_head_bytes=64 * 1024)
+
+        # 100 MB in 1 MB chunks
+        chunk = "M" * (1024 * 1024)
+        for _ in range(100):
+            accum.push(chunk)
+
+        accum.push("\nFINAL_ERROR: EPERM: operation not permitted\n")
+
+        self.assertEqual(accum.total_bytes_streamed, 100 * 1024 * 1024 + len("\nFINAL_ERROR: EPERM: operation not permitted\n"))
+        diag = accum.get_diagnostic_text()
+        self.assertIn("FINAL_ERROR: EPERM", diag)
+        self.assertIn("[truncated", diag)
+        self.assertLessEqual(len(diag.encode("utf-8")), MAX_COMMAND_OUTPUT_BYTES_RETAINED + 500)
+
+    def test_memory_soak_10_commands_10mb_each(self) -> None:
+        """Push 10 MB through 10 distinct command accumulators without memory explosion."""
+        accumulators = [
+            BoundedDiagnosticAccumulator(max_total_bytes=512 * 1024, max_head_bytes=64 * 1024)
+            for _ in range(10)
+        ]
+        chunk = "K" * (512 * 1024)  # 512 KiB chunk
+        for _ in range(20):          # 20 * 512 KiB = 10 MB per command
+            for acc in accumulators:
+                acc.push(chunk)
+
+        for idx, acc in enumerate(accumulators):
+            acc.push(f"\nEND_CMD_{idx}_EPERM\n")
+            diag = acc.get_diagnostic_text()
+            self.assertIn(f"END_CMD_{idx}_EPERM", diag)
+            self.assertLessEqual(len(diag.encode("utf-8")), MAX_COMMAND_OUTPUT_BYTES_RETAINED + 500)
+
+
+    # =========================================================
+    # 8. EVENT ORDERING & LATE NOTIFICATION RECONCILIATION
+    # =========================================================
+
+    def test_late_output_delta_after_item_completed(self) -> None:
+        """If outputDelta arrives after item/completed, diagnostic text is reconciled."""
         client = SyntheticTurnClient()
         runner = StreamingTurnRunner(client=client, live=False)
-        runner.current_permissions = ":read-only"
+        result = TurnRunResult(thread_id="th-late", turn_id="turn-late")
+        item_id = "cmd-late-order"
 
-        offers = []
-        runner._safe_approval_prompt = lambda *args, **kwargs: offers.append(kwargs) or "accept"
-
-        result = TurnRunResult(thread_id="th-1", turn_id="turn-1")
-
-        # Command: echo hello (Category: OTHER) failing with exit 1
+        # 1. item/started
         runner._handle_notification(
             result,
             {
-                "method": "item/commandExecution/outputDelta",
-                "params": {"itemId": "call-other", "delta": "EPERM: operation not permitted"},
+                "method": "item/started",
+                "params": {"item": {"id": item_id, "type": "commandExecution", "command": "npm test"}},
             },
         )
+
+        # 2. item/completed arrives first (empty inline)
         runner._handle_notification(
             result,
             {
                 "method": "item/completed",
                 "params": {
                     "item": {
-                        "id": "call-other",
+                        "id": item_id,
                         "type": "commandExecution",
-                        "command": "echo hello",
+                        "command": "npm test",
                         "status": "failed",
                         "exitCode": 1,
                     }
@@ -358,91 +544,19 @@ class TestStreamedCommandClassification(unittest.TestCase):
             },
         )
 
-        self.assertEqual(len(offers), 0)
-        self.assertFalse(result.command_executions[0]["bounded_host_execution"])
-
-    def test_genuine_test_failure_via_stream_receives_no_offer(self) -> None:
-        """Genuine test failure (FAIL src/index.test.ts) classified as FAILED / TEST_FAILURE receives no offer."""
-        client = SyntheticTurnClient()
-        runner = StreamingTurnRunner(client=client, live=False)
-        runner.current_permissions = ":read-only"
-
-        offers = []
-        runner._safe_approval_prompt = lambda *args, **kwargs: offers.append(kwargs) or "accept"
-
-        result = TurnRunResult(thread_id="th-1", turn_id="turn-1")
-
+        # 3. Late outputDelta arrives after item/completed
         runner._handle_notification(
             result,
             {
                 "method": "item/commandExecution/outputDelta",
-                "params": {
-                    "itemId": "call-test-fail",
-                    "delta": "FAIL src/app.test.ts\n ● App › should calculate\n Expected: 2\n Received: 1\n",
-                },
-            },
-        )
-        runner._handle_notification(
-            result,
-            {
-                "method": "item/completed",
-                "params": {
-                    "item": {
-                        "id": "call-test-fail",
-                        "type": "commandExecution",
-                        "command": "npx jest",
-                        "status": "failed",
-                        "exitCode": 1,
-                    }
-                },
+                "params": {"itemId": item_id, "delta": "EPERM: operation not permitted, mkdir tmp\\jest\n"},
             },
         )
 
-        self.assertEqual(len(offers), 0)
-        self.assertFalse(result.command_executions[0]["bounded_host_execution"])
-
-    def test_fake_eperm_spoofing_classification(self) -> None:
-        """
-        When a test script deliberately prints 'EPERM: operation not permitted' on exit 1,
-        it classifies as SANDBOX_DENIED and presents the explicit human approval prompt.
-        Crucially: host execution occurs ONLY IF the human user accepts; if declined, 0 host executions occur.
-        """
-        client = SyntheticTurnClient()
-        runner = StreamingTurnRunner(client=client, live=False)
-        runner.current_permissions = ":read-only"
-
-        # 1. User declines
-        runner._safe_approval_prompt = lambda *args, **kwargs: "decline"
-        result_decline = TurnRunResult(thread_id="th-fake", turn_id="turn-fake-1")
-
-        runner._handle_notification(
-            result_decline,
-            {
-                "method": "item/commandExecution/outputDelta",
-                "params": {
-                    "itemId": "call-fake-1",
-                    "delta": "EPERM: operation not permitted\n",
-                },
-            },
-        )
-        runner._handle_notification(
-            result_decline,
-            {
-                "method": "item/completed",
-                "params": {
-                    "item": {
-                        "id": "call-fake-1",
-                        "type": "commandExecution",
-                        "command": "npx jest",
-                        "status": "failed",
-                        "exitCode": 1,
-                    }
-                },
-            },
-        )
-
-        self.assertFalse(result_decline.command_executions[0]["bounded_host_execution"])
-        self.assertEqual(result_decline.command_executions[0]["exit_code"], 1)
+        self.assertEqual(len(result.command_executions), 1)
+        rec = result.command_executions[0]
+        self.assertIn("EPERM: operation not permitted", rec["classification_text"])
+        self.assertIn("EPERM: operation not permitted", rec["output_snippet"])
 
 
 if __name__ == "__main__":

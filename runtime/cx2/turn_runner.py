@@ -2616,39 +2616,14 @@ class StreamingTurnRunner:
                 updated_text = result.command_accumulators[item_id].get_diagnostic_text()
                 result.command_output[item_id] = updated_text
 
-                # Resilient late-event reconciliation if item/completed was already processed
+                # Resilient late-event audit reconciliation if item/completed was already processed.
+                # Strictly fail-closed: late stream deltas update diagnostic/audit text in place,
+                # but NEVER reopen a finalized authorization decision or present new bounded-host offers.
                 for cmd_exec in result.command_executions:
                     if cmd_exec.get("id") == item_id:
                         cmd_exec["classification_text"] = updated_text
                         if updated_text.strip():
                             cmd_exec["output_snippet"] = updated_text.strip()[:500]
-
-                        # If item/completed arrived earlier without diagnostic text, re-evaluate eligibility
-                        if not cmd_exec.get("bounded_offer_presented"):
-                            summary_obj = CommandExecutionSummary(
-                                command=cmd_exec.get("command") or "",
-                                exit_code=cmd_exec.get("exit_code"),
-                                duration_ms=cmd_exec.get("duration_ms"),
-                                sequence=cmd_exec.get("sequence", 0),
-                                categories=cmd_exec.get("categories", []),
-                                is_masked=cmd_exec.get("is_masked", False),
-                                display_command=cmd_exec.get("display_command", ""),
-                                output_snippet=cmd_exec.get("output_snippet", ""),
-                                classification_text=updated_text,
-                                cwd=cmd_exec.get("cwd"),
-                                bounded_host_execution=cmd_exec.get("bounded_host_execution", False),
-                            )
-                            perms = getattr(self, "current_permissions", ":read-only")
-                            if is_verification_command_eligible(summary_obj, permissions=perms):
-                                cmd_exec["bounded_offer_presented"] = True
-                                effective_dir = cmd_exec.get("cwd") or str(getattr(self, "current_cwd", None) or Path.cwd())
-                                self._handle_bounded_verification_offer(
-                                    result=result,
-                                    cmd_str=cmd_exec.get("command") or "",
-                                    disp_cmd=cmd_exec.get("display_command") or "",
-                                    cwd=effective_dir,
-                                    raw_record=cmd_exec,
-                                )
 
                 if self.live:
                     _CX2_TERMINAL.command_output_delta(
@@ -2844,6 +2819,8 @@ class StreamingTurnRunner:
                     "output_snippet": completed_summary.get("output_snippet", ""),
                     "classification_text": raw_out,
                     "cwd": cmd_cwd,
+                    "item_completed": True,
+                    "decision_finalized": True,
                     "bounded_host_execution": False,
                     "bounded_offer_presented": False,
                 }

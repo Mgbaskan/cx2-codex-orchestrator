@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 """
-CX2 2.0.11 Phase 1.1 / 1.2 Adversarial Qualification Test Suite
-Streamed Diagnostic Window Hardening, Head+Tail Bounded Retention,
-Failure Precedence (Strong Project Failure > Sandbox Permission Noise),
-Conflict Matrix (A-G), Weak 'FAIL' Negative Controls,
-True Late-Event Offer Reconciliation, Duplicate Protection,
-Inline aggregatedOutput, Interleaved Isolation, and Memory Soak.
+CX2 2.0.11 Phase 1.1 / 1.2 / 1.3 Adversarial Qualification Test Suite
+- Streamed Diagnostic Window Hardening (64 KiB head + 448 KiB tail = 512 KiB max)
+- Failure Precedence (Strong Project Failure > Sandbox Permission Noise)
+- Conflict Matrix (A-G) and Weak 'FAIL' Negative Controls
+- Fail-Closed Late Evidence Gate (item/completed is the authorization decision point)
+- Elimination of Partial-Stream Race
+- Pre- and Post-Completion Matrices (A-E)
+- Multiple Command Isolation
+- Inline aggregatedOutput & Memory Soak (100 MB).
 """
 
 import os
@@ -112,7 +115,7 @@ class TestStreamedCommandClassification(unittest.TestCase):
     # =========================================================
 
     def test_case_a_late_sandbox_error_after_700kib(self) -> None:
-        """CASE A: 700+ KiB ordinary output followed by late EPERM sandbox error."""
+        """CASE A: 700+ KiB ordinary output followed by late EPERM sandbox error before item/completed."""
         client = SyntheticTurnClient()
         runner = StreamingTurnRunner(client=client, live=False)
         result = TurnRunResult(thread_id="th-1", turn_id="turn-1")
@@ -415,14 +418,14 @@ class TestStreamedCommandClassification(unittest.TestCase):
         self.assertTrue(is_verification_command_eligible(summary_weak, permissions=":read-only"))
 
     # =========================================================
-    # 4. TRUE LATE-EVENT RECONCILIATION & DUPLICATE PROTECTION
+    # 4. PHASE 1.3 FAIL-CLOSED LATE EVIDENCE & RACE RESOLUTION
     # =========================================================
 
-    def test_true_late_event_offer_reconciliation(self) -> None:
+    def test_normal_production_path_offers_once(self) -> None:
         """
-        Lifecycle: item/started -> item/completed(exit 1, empty output) -> late outputDelta(EPERM).
-        After item/completed: offer count = 0 (inconclusive).
-        After late outputDelta: re-evaluates -> outcome = SANDBOX_DENIED -> offer count = exactly 1.
+        Normal Production Lifecycle:
+        item/started -> outputDelta(EPERM) -> item/completed(exit 1).
+        Required: BLOCKED / SANDBOX_DENIED, eligible = True, offer presented exactly once.
         """
         client = SyntheticTurnClient()
         runner = StreamingTurnRunner(client=client, live=False)
@@ -431,16 +434,17 @@ class TestStreamedCommandClassification(unittest.TestCase):
         offers_presented = []
         runner._safe_approval_prompt = lambda *args, **kwargs: offers_presented.append(kwargs) or "decline"
 
-        result = TurnRunResult(thread_id="th-late-recon", turn_id="turn-late-recon")
-        item_id = "cmd-late-recon"
+        result = TurnRunResult(thread_id="th-prod-norm", turn_id="turn-prod-norm")
+        item_id = "cmd-prod-norm"
 
-        # 1. item/started
         runner._handle_notification(
             result,
             {"method": "item/started", "params": {"item": {"id": item_id, "type": "commandExecution", "command": "npm test"}}},
         )
-
-        # 2. item/completed (exit 1, no inline output)
+        runner._handle_notification(
+            result,
+            {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": "EPERM: operation not permitted, mkdir tmp\\jest\n"}},
+        )
         runner._handle_notification(
             result,
             {
@@ -457,34 +461,87 @@ class TestStreamedCommandClassification(unittest.TestCase):
             },
         )
 
-        # At this point, no offer was presented because output was empty
-        self.assertEqual(len(offers_presented), 0)
-        self.assertEqual(len(result.command_executions), 1)
-
-        # 3. Late outputDelta arrives with EPERM
-        runner._handle_notification(
-            result,
-            {
-                "method": "item/commandExecution/outputDelta",
-                "params": {"itemId": item_id, "delta": "EPERM: operation not permitted, mkdir tmp\\jest\n"},
-            },
-        )
-
-        # Now offer was reconciled and presented exactly once
         self.assertEqual(len(offers_presented), 1)
-        self.assertIn("Verification command requires writable runtime access", offers_presented[0].get("title", ""))
+        rec = result.command_executions[0]
+        self.assertTrue(rec["item_completed"])
+        self.assertTrue(rec["decision_finalized"])
+        self.assertTrue(rec["bounded_offer_presented"])
+        self.assertIn("EPERM: operation not permitted", rec["classification_text"])
 
-    def test_late_event_duplicate_delta_protection(self) -> None:
-        """Sending repeated outputDelta chunks after offer presentation does NOT prompt again."""
+    def test_pre_completion_conflict_all_types(self) -> None:
+        """
+        Pre-completion conflict across TEST, TYPECHECK, LINT, BUILD:
+        Streams EPERM + genuine failure before item/completed -> 0 offers, outcome = FAILED.
+        """
+        test_cases = [
+            ("npm test", ["TEST"], "EPERM: error\nTest Suites: 1 failed, 1 total\n", "FAILED", "TEST_FAILURE"),
+            ("npm run typecheck", ["TYPECHECK"], "EPERM: error\nerror TS2322: Type mismatch\n", "FAILED", "TYPECHECK_FAILURE"),
+            ("npm run lint", ["LINT"], "EPERM: error\n1 problem (1 error, 0 warnings)\n", "FAILED", "LINT_FAILURE"),
+            ("npm run build", ["BUILD"], "EPERM: error\nBUILD FAILED\n", "FAILED", "BUILD_FAILURE"),
+        ]
+
+        for cmd, cats, stream_txt, expected_outcome, expected_reason in test_cases:
+            client = SyntheticTurnClient()
+            runner = StreamingTurnRunner(client=client, live=False)
+            runner.current_permissions = ":read-only"
+
+            offers = []
+            runner._safe_approval_prompt = lambda *args, **kwargs: offers.append(kwargs) or "decline"
+
+            result = TurnRunResult(thread_id=f"th-pre-{expected_reason}", turn_id=f"turn-pre-{expected_reason}")
+            item_id = f"cmd-pre-{expected_reason}"
+
+            runner._handle_notification(
+                result,
+                {"method": "item/started", "params": {"item": {"id": item_id, "type": "commandExecution", "command": cmd}}},
+            )
+            runner._handle_notification(
+                result,
+                {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": stream_txt}},
+            )
+            runner._handle_notification(
+                result,
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "id": item_id,
+                            "type": "commandExecution",
+                            "command": cmd,
+                            "status": "failed",
+                            "exitCode": 1,
+                        }
+                    },
+                },
+            )
+
+            self.assertEqual(len(offers), 0, f"Expected 0 offers for pre-completion conflict {expected_reason}")
+            rec = result.command_executions[0]
+            summary = CommandExecutionSummary(
+                command=rec["command"],
+                exit_code=rec["exit_code"],
+                categories=rec["categories"],
+                classification_text=rec["classification_text"],
+            )
+            outcome = classify_command_outcome(summary)
+            self.assertEqual(outcome.outcome, expected_outcome)
+            self.assertEqual(outcome.reason_code, expected_reason)
+
+    def test_post_completion_case_a_late_eperm_fails_closed(self) -> None:
+        """
+        Post-Completion Case A:
+        item/completed (exit 1, empty) -> late outputDelta(EPERM).
+        Required: Audit text reconciled to BLOCKED/SANDBOX_DENIED, but approval offers = 0.
+        """
         client = SyntheticTurnClient()
         runner = StreamingTurnRunner(client=client, live=False)
         runner.current_permissions = ":read-only"
 
-        offers_presented = []
-        runner._safe_approval_prompt = lambda *args, **kwargs: offers_presented.append(kwargs) or "decline"
+        offers = []
+        runner._safe_approval_prompt = lambda *args, **kwargs: offers.append(kwargs) or "decline"
 
-        result = TurnRunResult(thread_id="th-late-dup", turn_id="turn-late-dup")
-        item_id = "cmd-late-dup"
+        result = TurnRunResult(thread_id="th-post-a", turn_id="turn-post-a")
+        item_id = "cmd-post-a"
 
         runner._handle_notification(
             result,
@@ -494,48 +551,36 @@ class TestStreamedCommandClassification(unittest.TestCase):
             result,
             {
                 "method": "item/completed",
-                "params": {
-                    "item": {
-                        "id": item_id,
-                        "type": "commandExecution",
-                        "command": "npm test",
-                        "status": "failed",
-                        "exitCode": 1,
-                    }
-                },
+                "params": {"item": {"id": item_id, "type": "commandExecution", "command": "npm test", "status": "failed", "exitCode": 1}},
             },
         )
-
-        # First delta triggers offer
+        # Late EPERM arrives after item/completed
         runner._handle_notification(
             result,
-            {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": "EPERM: error 1\n"}},
+            {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": "EPERM: operation not permitted, mkdir tmp\\jest\n"}},
         )
-        self.assertEqual(len(offers_presented), 1)
 
-        # Second delta MUST NOT trigger another offer
-        runner._handle_notification(
-            result,
-            {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": "EPERM: error 2\n"}},
-        )
-        # Third delta MUST NOT trigger another offer
-        runner._handle_notification(
-            result,
-            {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": "more logs\n"}},
-        )
-        self.assertEqual(len(offers_presented), 1)
+        self.assertEqual(len(offers), 0, "Late EPERM must fail closed without creating new approval offers")
+        rec = result.command_executions[0]
+        self.assertTrue(rec["decision_finalized"])
+        self.assertFalse(rec["bounded_offer_presented"])
+        self.assertIn("EPERM: operation not permitted", rec["classification_text"])
 
-    def test_late_genuine_failure_no_offer(self) -> None:
-        """Late outputDelta containing genuine test failure does NOT trigger an offer."""
+    def test_post_completion_case_b_late_genuine_failure(self) -> None:
+        """
+        Post-Completion Case B:
+        item/completed (exit 1, empty) -> late outputDelta(TEST_FAILURE).
+        Required: Audit updated to FAILED/TEST_FAILURE, offers = 0.
+        """
         client = SyntheticTurnClient()
         runner = StreamingTurnRunner(client=client, live=False)
         runner.current_permissions = ":read-only"
 
-        offers_presented = []
-        runner._safe_approval_prompt = lambda *args, **kwargs: offers_presented.append(kwargs) or "decline"
+        offers = []
+        runner._safe_approval_prompt = lambda *args, **kwargs: offers.append(kwargs) or "decline"
 
-        result = TurnRunResult(thread_id="th-late-fail", turn_id="turn-late-fail")
-        item_id = "cmd-late-fail"
+        result = TurnRunResult(thread_id="th-post-b", turn_id="turn-post-b")
+        item_id = "cmd-post-b"
 
         runner._handle_notification(
             result,
@@ -545,24 +590,15 @@ class TestStreamedCommandClassification(unittest.TestCase):
             result,
             {
                 "method": "item/completed",
-                "params": {
-                    "item": {
-                        "id": item_id,
-                        "type": "commandExecution",
-                        "command": "npm test",
-                        "status": "failed",
-                        "exitCode": 1,
-                    }
-                },
+                "params": {"item": {"id": item_id, "type": "commandExecution", "command": "npm test", "status": "failed", "exitCode": 1}},
             },
         )
-
         runner._handle_notification(
             result,
             {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": "FAIL src/test.ts\nTest Suites: 1 failed, 1 total\n"}},
         )
 
-        self.assertEqual(len(offers_presented), 0)
+        self.assertEqual(len(offers), 0)
         rec = result.command_executions[0]
         summary = CommandExecutionSummary(
             command=rec["command"],
@@ -574,8 +610,225 @@ class TestStreamedCommandClassification(unittest.TestCase):
         self.assertEqual(outcome.outcome, "FAILED")
         self.assertEqual(outcome.reason_code, "TEST_FAILURE")
 
+    def test_post_completion_case_c_late_eperm_then_late_test_failure_race_eliminated(self) -> None:
+        """
+        Post-Completion Case C (The Race Reproduction & Resolution):
+        item/completed (empty) -> late outputDelta(EPERM) -> late outputDelta(TEST_FAILURE).
+        Required: Zero offers at all stages, final classification = FAILED/TEST_FAILURE.
+        """
+        client = SyntheticTurnClient()
+        runner = StreamingTurnRunner(client=client, live=False)
+        runner.current_permissions = ":read-only"
+
+        offers = []
+        runner._safe_approval_prompt = lambda *args, **kwargs: offers.append(kwargs) or "decline"
+
+        result = TurnRunResult(thread_id="th-post-c", turn_id="turn-post-c")
+        item_id = "cmd-post-c"
+
+        runner._handle_notification(
+            result,
+            {"method": "item/started", "params": {"item": {"id": item_id, "type": "commandExecution", "command": "npm test"}}},
+        )
+        runner._handle_notification(
+            result,
+            {
+                "method": "item/completed",
+                "params": {"item": {"id": item_id, "type": "commandExecution", "command": "npm test", "status": "failed", "exitCode": 1}},
+            },
+        )
+
+        # First late delta: EPERM
+        runner._handle_notification(
+            result,
+            {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": "EPERM: operation not permitted, mkdir tmp\\jest\n"}},
+        )
+        self.assertEqual(len(offers), 0, "Offer must NOT be shown on first partial late delta")
+
+        # Second late delta: Conclusive failure report
+        runner._handle_notification(
+            result,
+            {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": "FAIL src/test.ts\nTest Suites: 1 failed, 1 total\n"}},
+        )
+        self.assertEqual(len(offers), 0, "Offer must remain 0 after subsequent late failure")
+
+        rec = result.command_executions[0]
+        self.assertFalse(rec["bounded_host_execution"])
+        summary = CommandExecutionSummary(
+            command=rec["command"],
+            exit_code=rec["exit_code"],
+            categories=rec["categories"],
+            classification_text=rec["classification_text"],
+        )
+        outcome = classify_command_outcome(summary)
+        self.assertEqual(outcome.outcome, "FAILED")
+        self.assertEqual(outcome.reason_code, "TEST_FAILURE")
+
+    def test_post_completion_case_d_late_failure_then_late_eperm(self) -> None:
+        """
+        Post-Completion Case D:
+        item/completed (empty) -> late outputDelta(TEST_FAILURE) -> late outputDelta(EPERM).
+        Required: 0 offers, final classification = FAILED/TEST_FAILURE.
+        """
+        client = SyntheticTurnClient()
+        runner = StreamingTurnRunner(client=client, live=False)
+        runner.current_permissions = ":read-only"
+
+        offers = []
+        runner._safe_approval_prompt = lambda *args, **kwargs: offers.append(kwargs) or "decline"
+
+        result = TurnRunResult(thread_id="th-post-d", turn_id="turn-post-d")
+        item_id = "cmd-post-d"
+
+        runner._handle_notification(
+            result,
+            {"method": "item/started", "params": {"item": {"id": item_id, "type": "commandExecution", "command": "npm test"}}},
+        )
+        runner._handle_notification(
+            result,
+            {
+                "method": "item/completed",
+                "params": {"item": {"id": item_id, "type": "commandExecution", "command": "npm test", "status": "failed", "exitCode": 1}},
+            },
+        )
+        runner._handle_notification(
+            result,
+            {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": "FAIL src/test.ts\nTest Suites: 1 failed, 1 total\n"}},
+        )
+        runner._handle_notification(
+            result,
+            {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": "EPERM: operation not permitted\n"}},
+        )
+
+        self.assertEqual(len(offers), 0)
+        rec = result.command_executions[0]
+        summary = CommandExecutionSummary(
+            command=rec["command"],
+            exit_code=rec["exit_code"],
+            categories=rec["categories"],
+            classification_text=rec["classification_text"],
+        )
+        outcome = classify_command_outcome(summary)
+        self.assertEqual(outcome.outcome, "FAILED")
+        self.assertEqual(outcome.reason_code, "TEST_FAILURE")
+
+    def test_post_completion_case_e_repeated_duplicate_late_deltas(self) -> None:
+        """
+        Post-Completion Case E:
+        item/completed (empty) -> 10 repeated late outputDelta(EPERM) chunks.
+        Required: 0 offers across all repeated chunks.
+        """
+        client = SyntheticTurnClient()
+        runner = StreamingTurnRunner(client=client, live=False)
+        runner.current_permissions = ":read-only"
+
+        offers = []
+        runner._safe_approval_prompt = lambda *args, **kwargs: offers.append(kwargs) or "decline"
+
+        result = TurnRunResult(thread_id="th-post-e", turn_id="turn-post-e")
+        item_id = "cmd-post-e"
+
+        runner._handle_notification(
+            result,
+            {"method": "item/started", "params": {"item": {"id": item_id, "type": "commandExecution", "command": "npm test"}}},
+        )
+        runner._handle_notification(
+            result,
+            {
+                "method": "item/completed",
+                "params": {"item": {"id": item_id, "type": "commandExecution", "command": "npm test", "status": "failed", "exitCode": 1}},
+            },
+        )
+
+        for i in range(10):
+            runner._handle_notification(
+                result,
+                {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": f"EPERM chunk {i}\n"}},
+            )
+
+        self.assertEqual(len(offers), 0)
+
     # =========================================================
-    # 5. INLINE aggregatedOutput QUALIFICATION
+    # 5. MULTIPLE COMMAND ISOLATION
+    # =========================================================
+
+    def test_multiple_command_isolation_late_a_and_normal_b(self) -> None:
+        """
+        Simulate:
+        Command A: started -> completed(exit 1, empty) -> late EPERM (post-completion)
+        Command B: started -> normal EPERM stream (pre-completion) -> completed(exit 1)
+        Required:
+        Command A offers = 0
+        Command B offers = 1
+        No state or identity leakage between commands.
+        """
+        client = SyntheticTurnClient()
+        runner = StreamingTurnRunner(client=client, live=False)
+        runner.current_permissions = ":read-only"
+
+        offers = []
+        runner._safe_approval_prompt = lambda *args, **kwargs: offers.append(kwargs) or "decline"
+
+        result = TurnRunResult(thread_id="th-multi", turn_id="turn-multi")
+        id_a = "cmd-a"
+        id_b = "cmd-b"
+
+        # 1. Command A starts and completes empty
+        runner._handle_notification(
+            result,
+            {"method": "item/started", "params": {"item": {"id": id_a, "type": "commandExecution", "command": "npm test -- a"}}},
+        )
+        runner._handle_notification(
+            result,
+            {
+                "method": "item/completed",
+                "params": {"item": {"id": id_a, "type": "commandExecution", "command": "npm test -- a", "status": "failed", "exitCode": 1}},
+            },
+        )
+        self.assertEqual(len(offers), 0)
+
+        # 2. Command B starts
+        runner._handle_notification(
+            result,
+            {"method": "item/started", "params": {"item": {"id": id_b, "type": "commandExecution", "command": "npm test -- b"}}},
+        )
+
+        # 3. Late EPERM arrives for Command A
+        runner._handle_notification(
+            result,
+            {"method": "item/commandExecution/outputDelta", "params": {"itemId": id_a, "delta": "EPERM on A\n"}},
+        )
+        self.assertEqual(len(offers), 0, "Late EPERM for A must not create offer")
+
+        # 4. Normal EPERM arrives for Command B
+        runner._handle_notification(
+            result,
+            {"method": "item/commandExecution/outputDelta", "params": {"itemId": id_b, "delta": "EPERM: operation not permitted on B\n"}},
+        )
+
+        # 5. Command B completes
+        runner._handle_notification(
+            result,
+            {
+                "method": "item/completed",
+                "params": {"item": {"id": id_b, "type": "commandExecution", "command": "npm test -- b", "status": "failed", "exitCode": 1}},
+            },
+        )
+
+        # Exactly 1 offer presented, and it is for Command B
+        self.assertEqual(len(offers), 1)
+        self.assertIn("npm test -- b", offers[0].get("details", [""])[0])
+
+        rec_a = next(c for c in result.command_executions if c["id"] == id_a)
+        rec_b = next(c for c in result.command_executions if c["id"] == id_b)
+
+        self.assertFalse(rec_a["bounded_offer_presented"])
+        self.assertTrue(rec_b["bounded_offer_presented"])
+        self.assertIn("EPERM on A", rec_a["classification_text"])
+        self.assertIn("EPERM: operation not permitted on B", rec_b["classification_text"])
+
+    # =========================================================
+    # 6. INLINE aggregatedOutput QUALIFICATION
     # =========================================================
 
     def test_aggregated_output_small_and_large(self) -> None:
@@ -596,7 +849,7 @@ class TestStreamedCommandClassification(unittest.TestCase):
         self.assertLessEqual(len(res_end.encode("utf-8")), MAX_COMMAND_OUTPUT_BYTES_RETAINED + 500)
 
     # =========================================================
-    # 6. MIXED INLINE + STREAM PRECEDENCE
+    # 7. MIXED INLINE + STREAM PRECEDENCE
     # =========================================================
 
     def test_mixed_inline_and_stream_precedence(self) -> None:
@@ -619,7 +872,7 @@ class TestStreamedCommandClassification(unittest.TestCase):
         self.assertEqual(extract_command_diagnostic_text({}, accumulated_stream=""), "")
 
     # =========================================================
-    # 7. INTERLEAVED COMMAND STRESS & ISOLATION (20 COMMANDS)
+    # 8. INTERLEAVED COMMAND STRESS & ISOLATION (20 COMMANDS)
     # =========================================================
 
     def test_interleaved_command_stress_20_commands(self) -> None:
@@ -667,7 +920,7 @@ class TestStreamedCommandClassification(unittest.TestCase):
                 self.assertIn(f"[CMD_{cmd_idx}_CHUNK_{chunk_idx}]", rec["classification_text"])
 
     # =========================================================
-    # 8. MEMORY SOAK (100 MB SINGLE & MULTI-COMMAND)
+    # 9. MEMORY SOAK (100 MB SINGLE & MULTI-COMMAND)
     # =========================================================
 
     def test_memory_soak_100mb_single_command(self) -> None:

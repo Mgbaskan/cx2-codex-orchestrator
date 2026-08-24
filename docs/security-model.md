@@ -37,7 +37,7 @@ Instead, CX2 offers one-shot bounded verification execution:
 - **Fail-Closed Late Evidence Authorization Barrier**: The `item/completed` event serves as the authoritative decision point for bounded-verification host offers. Late stream deltas arriving after `item/completed` may update telemetry and audit classifications but strictly fail closed and cannot reopen authorization or create new host-execution offers.
 - **Bounded Command Diagnostic Retention**: Child command output and diagnostic streams retain a bounded head+tail window (first 64 KiB + most recent 448 KiB, retaining at most 512 KiB per command), empirically exercised with child output streams up to 100 MB per command.
 - **Full Process-Tree Termination**: On timeout, all child and descendant processes are forcefully terminated via `taskkill /F /T /PID`.
-- **Shared Cache Invariant**: The shared `.codex-agent-cache` directory is never modified or permission-altered.
+- **Shared Cache Invariant**: CX2's bounded-verification path does not permission-alter or permanently redirect the shared `.codex-agent-cache` directory. Ordinary Codex-managed cache behavior remains unchanged.
 
 ### Residual Risk
 

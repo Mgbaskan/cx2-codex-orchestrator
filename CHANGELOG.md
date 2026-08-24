@@ -29,10 +29,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - No `dangerFullAccess` fallback.
 - Effective model turn remains `:read-only`.
 - Post-completion late evidence fails closed for authorization.
+- CX2's bounded-verification path does not permission-alter or permanently redirect the shared `.codex-agent-cache` directory. Ordinary Codex-managed cache behavior remains unchanged.
 
 ### Qualification
 - Validated with 383 deterministic regression tests across normal discovery and isolated profile environments.
-- Qualified through 32 sandbox-block soak cycles, 42 failure-conflict cycles, 36 late-evidence fail-closed variations, 50 interleaved multi-command items, large stream soak up to 100 MB, 14 live App Server turns, and live HIBRIT Jest canary.
+- Qualified through 32 sandbox-block soak cycles, 42 failure-conflict cycles, 36 late-evidence fail-closed variations, 50 interleaved multi-command items, large stream soak up to 100 MB, 14 live App Server turns (zero tracebacks, zero stuck turns, read-only persistence maintained), and representative multi-suite backend verification canary (18 suites passed, 1 skipped; 51 tests passed, 1 skipped; 0 failures).
 
 ## [2.0.10] - 2026-08-24
 

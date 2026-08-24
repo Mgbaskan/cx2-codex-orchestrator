@@ -43,7 +43,7 @@ When submitting a security report or diagnostic logs:
 - **Evidence-Based Gate Verification**: Verification status (`VERIFIED`) strictly requires observed zero exit codes from legitimate test execution without masking operators. Approvals and prose do not substitute for empirical execution evidence.
 - **Bounded Command Diagnostic Retention**: Command output and diagnostic streams retain a bounded head+tail window (first 64 KiB + most recent 448 KiB, retaining at most 512 KiB per command), empirically exercised with child output streams up to 100 MB per command.
 - **Process-Tree Termination on Timeout**: Command timeouts forcefully terminate the complete process hierarchy to prevent orphaned background processes.
-- **Shared Cache Protection**: The shared `.codex-agent-cache` directory is never modified, permission-altered, or written to outside standard Codex operation.
+- **Shared Cache Protection**: CX2's bounded-verification path does not permission-alter or permanently redirect the shared `.codex-agent-cache` directory. Ordinary Codex-managed cache behavior remains unchanged.
 
 ## Residual Risks
 

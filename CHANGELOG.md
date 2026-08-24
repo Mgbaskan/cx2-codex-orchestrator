@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [2.0.10] - 2026-08-24
 
 ### Fixed
-- Windows read-only verification commands that require legitimate runtime/cache writes (such as Jest, Pytest, Go test) can now be recovered through explicit bounded verification execution instead of remaining permanently `BLOCKED`.
+- Windows read-only verification commands that require legitimate runtime/cache writes (such as Jest and other test/build/typecheck/lint workflows) can now be recovered through explicit bounded verification execution instead of remaining permanently `BLOCKED`.
 - Prevented verification workflows from failing solely because the Codex read-only sandbox denies temporary directory or cache writes.
 - Bounded process output capture to prevent unbounded process-memory accumulation during high-volume stdout/stderr generation.
 

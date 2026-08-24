@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Live Codex App Server command failures whose stderr/stdout arrives through `item/commandExecution/outputDelta` are now correctly included in verification classification when `item/completed` lacks inline output.
 - Sandbox-write failures such as `EPERM` on legitimate verification temporary directory and cache writes can now reach the explicit bounded-verification approval path in the real streamed App Server lifecycle.
 - Genuine test, typecheck, lint, and build failures take precedence over permission noise and are not offered bounded-host retry.
+- Custom -TargetDir installations now resolve CX runtime state and the bundled Codex binary from their own installed runtime instead of falling back to the default user .cx directory.
 
 ### Reliability
 - Command diagnostic retention uses a bounded per-command head+tail window: first 64 KiB + most recent 448 KiB, retaining at most 512 KiB of diagnostic bytes per command. Retained command-diagnostic memory is bounded per command and independent of total streamed byte volume for that command.

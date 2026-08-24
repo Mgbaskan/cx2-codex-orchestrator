@@ -289,7 +289,7 @@ TIMEOUT_PATTERNS = [
 
 CONCLUSIVE_TEST_FAILURE_PATTERNS = [
     # Jest / Vitest / Mocha / Jasmine / Ava
-    re.compile(r"\bFAIL\b", re.IGNORECASE),
+    re.compile(r"(?:^|\s)FAIL\s+[a-zA-Z0-9_\-./\\]+", re.IGNORECASE),
     re.compile(r"\b\d+\s+failed\b", re.IGNORECASE),
     re.compile(r"Tests:\s+.*\b\d+\s+failed\b", re.IGNORECASE),
     re.compile(r"Test Suites:\s+.*\b\d+\s+failed\b", re.IGNORECASE),
@@ -315,9 +315,8 @@ CONCLUSIVE_TEST_FAILURE_PATTERNS = [
     # Maven / Gradle / Java test
     re.compile(r"Tests run:\s+\d+,\s+Failures:\s+[1-9]\d*", re.IGNORECASE),
     re.compile(r"Tests run:\s+\d+,\s+Errors:\s+[1-9]\d*", re.IGNORECASE),
-    re.compile(r"BUILD FAILED", re.IGNORECASE),
     # Generic test failure indicators
-    re.compile(r"\b\d+\s+(?:test|tests|spec|specs)\s+failed\b", re.IGNORECASE),
+    re.compile(r"\b\d+\s+(?:test|tests|spec|specs|test suite|test suites)\s+failed\b", re.IGNORECASE),
     re.compile(r"npm ERR! Test failed", re.IGNORECASE),
 ]
 
@@ -340,6 +339,7 @@ CONCLUSIVE_BUILD_FAILURE_PATTERNS = [
     re.compile(r"Build failed with \d+ errors?:", re.IGNORECASE),
     re.compile(r"SyntaxError:", re.IGNORECASE),
     re.compile(r"Compilation failed", re.IGNORECASE),
+    re.compile(r"BUILD FAILED", re.IGNORECASE),
 ]
 
 
@@ -401,10 +401,10 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
                 command=summary.command,
                 display_command=disp,
                 category=primary_cat,
-                exit_code=summary.exit_code,
+                exit_code=0,
                 duration_ms=summary.duration_ms,
                 sequence=summary.sequence,
-                outcome="INCONCLUSIVE",
+                outcome="BLOCKED",
                 reason_code="MASKED_EXIT_CODE",
                 output_snippet=disp_snippet,
                 bounded_host_execution=bounded_exec,
@@ -413,7 +413,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             command=summary.command,
             display_command=disp,
             category=primary_cat,
-            exit_code=summary.exit_code,
+            exit_code=0,
             duration_ms=summary.duration_ms,
             sequence=summary.sequence,
             outcome="PASSED",
@@ -443,13 +443,137 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             exit_code=None,
             duration_ms=summary.duration_ms,
             sequence=summary.sequence,
-            outcome="INCONCLUSIVE",
+            outcome="INTERRUPTED",
             reason_code="NO_EXIT_CODE",
             output_snippet=disp_snippet,
             bounded_host_execution=bounded_exec,
         )
 
-    # Exit code != 0: Check deterministic blocked signatures first
+    # -------------------------------------------------------------------------
+    # Exit code != 0:
+    # Check for strong conclusive project failure evidence FIRST.
+    # Genuine test, typecheck, lint, and build failures take precedence over
+    # secondary sandbox/permission noise in logs.
+    # -------------------------------------------------------------------------
+
+    # 1. Check category-aligned project failure patterns first if command is categorized
+    if ("TEST" in summary.categories or primary_cat == "TEST") and any(p.search(snippet) for p in CONCLUSIVE_TEST_FAILURE_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category="TEST",
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="FAILED",
+            reason_code="TEST_FAILURE",
+            output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
+        )
+
+    if ("TYPECHECK" in summary.categories or primary_cat == "TYPECHECK") and any(p.search(snippet) for p in CONCLUSIVE_TYPECHECK_FAILURE_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category="TYPECHECK",
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="FAILED",
+            reason_code="TYPECHECK_FAILURE",
+            output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
+        )
+
+    if ("LINT" in summary.categories or primary_cat == "LINT") and any(p.search(snippet) for p in CONCLUSIVE_LINT_FAILURE_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category="LINT",
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="FAILED",
+            reason_code="LINT_FAILURE",
+            output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
+        )
+
+    if ("BUILD" in summary.categories or primary_cat == "BUILD") and any(p.search(snippet) for p in CONCLUSIVE_BUILD_FAILURE_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category="BUILD",
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="FAILED",
+            reason_code="BUILD_FAILURE",
+            output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
+        )
+
+    # 2. General project failure pattern checks (across any categories)
+    if any(p.search(snippet) for p in CONCLUSIVE_TEST_FAILURE_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category="TEST" if "TEST" in summary.categories else primary_cat,
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="FAILED",
+            reason_code="TEST_FAILURE",
+            output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
+        )
+
+    if any(p.search(snippet) for p in CONCLUSIVE_TYPECHECK_FAILURE_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category="TYPECHECK" if "TYPECHECK" in summary.categories else primary_cat,
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="FAILED",
+            reason_code="TYPECHECK_FAILURE",
+            output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
+        )
+
+    if any(p.search(snippet) for p in CONCLUSIVE_LINT_FAILURE_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category="LINT" if "LINT" in summary.categories else primary_cat,
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="FAILED",
+            reason_code="LINT_FAILURE",
+            output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
+        )
+
+    if any(p.search(snippet) for p in CONCLUSIVE_BUILD_FAILURE_PATTERNS):
+        return CommandOutcome(
+            command=summary.command,
+            display_command=disp,
+            category="BUILD" if "BUILD" in summary.categories else primary_cat,
+            exit_code=summary.exit_code,
+            duration_ms=summary.duration_ms,
+            sequence=summary.sequence,
+            outcome="FAILED",
+            reason_code="BUILD_FAILURE",
+            output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
+        )
+
+    # -------------------------------------------------------------------------
+    # If no conclusive project failure was found, check environment / sandbox blocks
+    # -------------------------------------------------------------------------
+
     if any(p.search(snippet) for p in ENV_INIT_PATTERNS):
         return CommandOutcome(
             command=summary.command,
@@ -516,63 +640,6 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             sequence=summary.sequence,
             outcome="BLOCKED",
             reason_code="TIMEOUT",
-            output_snippet=disp_snippet,
-            bounded_host_execution=bounded_exec,
-        )
-
-    # Check for conclusive positive project failure evidence
-    if any(p.search(snippet) for p in CONCLUSIVE_TEST_FAILURE_PATTERNS):
-        return CommandOutcome(
-            command=summary.command,
-            display_command=disp,
-            category="TEST" if "TEST" in summary.categories else primary_cat,
-            exit_code=summary.exit_code,
-            duration_ms=summary.duration_ms,
-            sequence=summary.sequence,
-            outcome="FAILED",
-            reason_code="TEST_FAILURE",
-            output_snippet=disp_snippet,
-            bounded_host_execution=bounded_exec,
-        )
-
-    if "TYPECHECK" in summary.categories and any(p.search(snippet) for p in CONCLUSIVE_TYPECHECK_FAILURE_PATTERNS):
-        return CommandOutcome(
-            command=summary.command,
-            display_command=disp,
-            category="TYPECHECK",
-            exit_code=summary.exit_code,
-            duration_ms=summary.duration_ms,
-            sequence=summary.sequence,
-            outcome="FAILED",
-            reason_code="TYPECHECK_FAILURE",
-            output_snippet=disp_snippet,
-            bounded_host_execution=bounded_exec,
-        )
-
-    if "LINT" in summary.categories and any(p.search(snippet) for p in CONCLUSIVE_LINT_FAILURE_PATTERNS):
-        return CommandOutcome(
-            command=summary.command,
-            display_command=disp,
-            category="LINT",
-            exit_code=summary.exit_code,
-            duration_ms=summary.duration_ms,
-            sequence=summary.sequence,
-            outcome="FAILED",
-            reason_code="LINT_FAILURE",
-            output_snippet=disp_snippet,
-            bounded_host_execution=bounded_exec,
-        )
-
-    if "BUILD" in summary.categories and any(p.search(snippet) for p in CONCLUSIVE_BUILD_FAILURE_PATTERNS):
-        return CommandOutcome(
-            command=summary.command,
-            display_command=disp,
-            category="BUILD",
-            exit_code=summary.exit_code,
-            duration_ms=summary.duration_ms,
-            sequence=summary.sequence,
-            outcome="FAILED",
-            reason_code="BUILD_FAILURE",
             output_snippet=disp_snippet,
             bounded_host_execution=bounded_exec,
         )

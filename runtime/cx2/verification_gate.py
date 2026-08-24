@@ -165,7 +165,7 @@ TEST_COMMAND_PATTERNS = [
         r"bun\s+test|"
         r"npx\s+(?:jest|vitest|playwright|cypress|mocha|ava)|"
         r"pytest|"
-        r"python\s+-m\s+(?:pytest|unittest)|"
+        r"(?:[^\s\"']*python\d*(?:\.exe)?|py)\s+-m\s+(?:pytest|unittest)|"
         r"tox|"
         r"go\s+test|"
         r"cargo\s+test|"
@@ -355,6 +355,7 @@ class CommandExecutionSummary:
     display_command: str = ""
     classification_text: str = ""
     cwd: str | None = None
+    bounded_host_execution: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -377,6 +378,7 @@ class CommandOutcome:
                       # UNSUPPORTED_CAPABILITY | WORKSPACE_WRITE_REQUIRED | MASKED_EXIT_CODE |
                       # NO_EXIT_CODE | TURN_INTERRUPTED | INCONCLUSIVE_NON_ZERO_EXIT
     output_snippet: str = ""
+    bounded_host_execution: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -391,6 +393,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
     primary_cat = summary.categories[0] if summary.categories else "OTHER"
     snippet = summary.classification_text or summary.output_snippet or ""
     disp_snippet = summary.output_snippet or snippet[:500]
+    bounded_exec = getattr(summary, "bounded_host_execution", False)
 
     if summary.exit_code == 0:
         if summary.is_masked:
@@ -404,6 +407,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
                 outcome="INCONCLUSIVE",
                 reason_code="MASKED_EXIT_CODE",
                 output_snippet=disp_snippet,
+                bounded_host_execution=bounded_exec,
             )
         return CommandOutcome(
             command=summary.command,
@@ -415,6 +419,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             outcome="PASSED",
             reason_code="EXIT_SUCCESS",
             output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
         )
 
     if summary.exit_code is None:
@@ -429,6 +434,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
                 outcome="BLOCKED",
                 reason_code="TIMEOUT",
                 output_snippet=disp_snippet,
+                bounded_host_execution=bounded_exec,
             )
         return CommandOutcome(
             command=summary.command,
@@ -440,6 +446,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             outcome="INCONCLUSIVE",
             reason_code="NO_EXIT_CODE",
             output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
         )
 
     # Exit code != 0: Check deterministic blocked signatures first
@@ -454,6 +461,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             outcome="BLOCKED",
             reason_code="ENVIRONMENT_INIT_FAILED",
             output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
         )
 
     if any(p.search(snippet) for p in WORKSPACE_WRITE_PATTERNS):
@@ -467,6 +475,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             outcome="BLOCKED",
             reason_code="WORKSPACE_WRITE_REQUIRED",
             output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
         )
 
     if any(p.search(snippet) for p in EXECUTABLE_NOT_FOUND_PATTERNS):
@@ -480,6 +489,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             outcome="BLOCKED",
             reason_code="EXECUTABLE_NOT_FOUND",
             output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
         )
 
     if any(p.search(snippet) for p in SANDBOX_PERMISSION_PATTERNS):
@@ -493,6 +503,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             outcome="BLOCKED",
             reason_code="SANDBOX_DENIED",
             output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
         )
 
     if any(p.search(snippet) for p in TIMEOUT_PATTERNS):
@@ -506,6 +517,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             outcome="BLOCKED",
             reason_code="TIMEOUT",
             output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
         )
 
     # Check for conclusive positive project failure evidence
@@ -520,6 +532,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             outcome="FAILED",
             reason_code="TEST_FAILURE",
             output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
         )
 
     if "TYPECHECK" in summary.categories and any(p.search(snippet) for p in CONCLUSIVE_TYPECHECK_FAILURE_PATTERNS):
@@ -533,6 +546,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             outcome="FAILED",
             reason_code="TYPECHECK_FAILURE",
             output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
         )
 
     if "LINT" in summary.categories and any(p.search(snippet) for p in CONCLUSIVE_LINT_FAILURE_PATTERNS):
@@ -546,6 +560,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             outcome="FAILED",
             reason_code="LINT_FAILURE",
             output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
         )
 
     if "BUILD" in summary.categories and any(p.search(snippet) for p in CONCLUSIVE_BUILD_FAILURE_PATTERNS):
@@ -559,6 +574,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
             outcome="FAILED",
             reason_code="BUILD_FAILURE",
             output_snippet=disp_snippet,
+            bounded_host_execution=bounded_exec,
         )
 
     # Inconclusive non-zero exit: not enough evidence to prove test failure or environment block
@@ -572,6 +588,7 @@ def classify_command_outcome(summary: CommandExecutionSummary) -> CommandOutcome
         outcome="INCONCLUSIVE",
         reason_code="INCONCLUSIVE_NON_ZERO_EXIT",
         output_snippet=disp_snippet,
+        bounded_host_execution=bounded_exec,
     )
 
 
@@ -928,24 +945,36 @@ def classify_command(command_str: str) -> list[str]:
 
     cats: list[str] = []
     text = command_str.strip()
+    unwrapped = unwrap_display_command(text)
+
+    candidates = [text]
+    if unwrapped != text:
+        candidates.append(unwrapped)
+    # Also check normalized executable basename if full path was used
+    clean_text = re.sub(r'^["]([^"]+)["]', r'\1', text)
+    clean_base = re.sub(r'^["]?[a-zA-Z0-9_\-./\\]+[/\\]([a-zA-Z0-9_\-]+(?:\.exe)?)["]?', r'\1', text)
+    if clean_text not in candidates:
+        candidates.append(clean_text)
+    if clean_base not in candidates:
+        candidates.append(clean_base)
 
     for pattern in TEST_COMMAND_PATTERNS:
-        if pattern.search(text):
+        if any(pattern.search(c) for c in candidates):
             cats.append("TEST")
             break
 
     for pattern in TYPECHECK_COMMAND_PATTERNS:
-        if pattern.search(text):
+        if any(pattern.search(c) for c in candidates):
             cats.append("TYPECHECK")
             break
 
     for pattern in LINT_COMMAND_PATTERNS:
-        if pattern.search(text):
+        if any(pattern.search(c) for c in candidates):
             cats.append("LINT")
             break
 
     for pattern in BUILD_COMMAND_PATTERNS:
-        if pattern.search(text):
+        if any(pattern.search(c) for c in candidates):
             cats.append("BUILD")
             break
 

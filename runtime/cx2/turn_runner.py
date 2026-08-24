@@ -31,11 +31,16 @@ from client import (
 )
 
 from verification_gate import (
+    CommandExecutionSummary,
     classify_command,
     extract_changed_files_from_diff,
     extract_changed_files_from_items,
     is_command_masked,
     unwrap_display_command,
+)
+from bounded_verification_runner import (
+    is_verification_command_eligible,
+    execute_bounded_verification_command,
 )
 
 
@@ -961,6 +966,9 @@ class StreamingTurnRunner:
                 + repr(approval_policy)
             )
 
+        self.current_permissions = permissions
+        self.current_cwd = cwd
+
         params = {
             "threadId":
                 thread_id,
@@ -1393,6 +1401,139 @@ class StreamingTurnRunner:
         )
 
     # ---------------------------------------------------------
+    # Safe interactive approval prompt
+    # ---------------------------------------------------------
+
+    def _safe_approval_prompt(
+        self,
+        result: TurnRunResult,
+        *,
+        title: str,
+        details: list[str],
+        decisions: list[str],
+        default: str,
+    ) -> str:
+        deny_like = (
+            "decline",
+            "denied",
+            "cancel",
+            "abort",
+        )
+
+        safe_default = (
+            default
+            if default in decisions
+            else ""
+        )
+
+        if not safe_default:
+            for candidate in deny_like:
+                if candidate in decisions:
+                    safe_default = candidate
+                    break
+
+        if not safe_default:
+            return ""
+
+        if not self.live or not getattr(_CX2_TERMINAL, "can_prompt", False):
+            return safe_default
+
+        # Measure human blocking time
+        result.interactive_approval_prompt_count += 1
+        t_start = time.monotonic()
+        try:
+            decision = _CX2_TERMINAL.approval_prompt(
+                title=title,
+                details=details,
+                decisions=decisions,
+                default_decision=safe_default,
+            )
+        finally:
+            t_end = time.monotonic()
+            wait_sec = max(0.0, t_end - t_start)
+            result.human_approval_wait_seconds += wait_sec
+
+        if decision not in decisions:
+            return safe_default
+
+        return decision
+
+    # ---------------------------------------------------------
+    # CX2 2.0.10 Bounded verification execution offer
+    # ---------------------------------------------------------
+
+    def _handle_bounded_verification_offer(
+        self,
+        result: TurnRunResult,
+        *,
+        cmd_str: str,
+        disp_cmd: str,
+        cwd: str,
+        raw_record: dict[str, Any],
+    ) -> None:
+        cmd_identity = (
+            "bounded_verification_exec",
+            str(cwd).strip(),
+            str(disp_cmd or cmd_str).strip(),
+        )
+
+        # 1. Check circuit-breaker
+        if result.interactive_approval_prompt_count >= self.max_approval_prompts_per_turn:
+            result.circuit_breaker_opened = True
+            if not result.approval_state.circuit_warning_rendered:
+                if self.live:
+                    _CX2_TERMINAL.warning(
+                        f"Tur içi onay sınırı aşıldı ({result.interactive_approval_prompt_count}/{self.max_approval_prompts_per_turn}). Kalan onay istekleri otomatik reddediliyor."
+                    )
+                result.approval_state.circuit_warning_rendered = True
+            result.auto_decline_count += 1
+            return
+
+        # 2. Check previously declined identities
+        if cmd_identity in result.approval_state.declined_identities:
+            result.auto_decline_count += 1
+            return
+
+        # 3. Prompt user with transparent warning
+        details = [
+            f"Command: {disp_cmd or cmd_str}",
+            f"CWD: {cwd}",
+            "This command will execute outside the read-only sandbox and may modify files.",
+        ]
+
+        decision = self._safe_approval_prompt(
+            result,
+            title="Verification command requires writable runtime access",
+            details=details,
+            decisions=["accept", "decline"],
+            default="decline",
+        )
+
+        if decision == "accept":
+            bounded_res = execute_bounded_verification_command(
+                command=disp_cmd or cmd_str,
+                cwd=cwd,
+                timeout=60.0,
+            )
+            raw_record["exit_code"] = bounded_res.exit_code
+            raw_record["output_snippet"] = bounded_res.output_snippet
+            raw_record["classification_text"] = bounded_res.classification_text
+            raw_record["duration_ms"] = (raw_record.get("duration_ms") or 0) + bounded_res.duration_ms
+            raw_record["bounded_host_execution"] = True
+
+            result.command_output[cmd_str] = bounded_res.classification_text
+            result.server_request_actions.append({
+                "method": "bounded_verification_exec",
+                "action": f"accept:{bounded_res.exit_code}",
+            })
+        else:
+            result.approval_state.declined_identities.add(cmd_identity)
+            result.server_request_actions.append({
+                "method": "bounded_verification_exec",
+                "action": "decline",
+            })
+
+    # ---------------------------------------------------------
     # Server -> client requests
     # ---------------------------------------------------------
 
@@ -1481,53 +1622,13 @@ class StreamingTurnRunner:
             decisions: list[str],
             default: str,
         ) -> str:
-
-            deny_like = (
-                "decline",
-                "denied",
-                "cancel",
-                "abort",
+            return self._safe_approval_prompt(
+                result,
+                title=title,
+                details=details,
+                decisions=decisions,
+                default=default,
             )
-
-            safe_default = (
-                default
-                if default in decisions
-                else ""
-            )
-
-            if not safe_default:
-
-                for candidate in deny_like:
-
-                    if candidate in decisions:
-                        safe_default = candidate
-                        break
-
-            if not safe_default:
-                return ""
-
-            if not self.live or not getattr(_CX2_TERMINAL, "can_prompt", False):
-                return safe_default
-
-            # Measure human blocking time
-            result.interactive_approval_prompt_count += 1
-            t_start = time.monotonic()
-            try:
-                decision = _CX2_TERMINAL.approval_prompt(
-                    title=title,
-                    details=details,
-                    decisions=decisions,
-                    default_decision=safe_default,
-                )
-            finally:
-                t_end = time.monotonic()
-                wait_sec = max(0.0, t_end - t_start)
-                result.human_approval_wait_seconds += wait_sec
-
-            if decision not in decisions:
-                return safe_default
-
-            return decision
 
         def send_decision(
             decision: str,
@@ -2515,7 +2616,9 @@ class StreamingTurnRunner:
                 raw_out = ""
                 if isinstance(completed_item, dict):
                     raw_out = str(completed_item.get("output") or completed_item.get("error") or completed_item.get("stderr") or "")
-                result.command_executions.append({
+                cmd_cwd = completed_summary.get("cwd")
+
+                cmd_record = {
                     "command": cmd_str,
                     "exit_code": exit_code,
                     "duration_ms": dur_ms,
@@ -2525,8 +2628,35 @@ class StreamingTurnRunner:
                     "display_command": disp_cmd,
                     "output_snippet": completed_summary.get("output_snippet", ""),
                     "classification_text": raw_out,
-                    "cwd": completed_summary.get("cwd"),
-                })
+                    "cwd": cmd_cwd,
+                    "bounded_host_execution": False,
+                }
+                result.command_executions.append(cmd_record)
+
+                summary_obj = CommandExecutionSummary(
+                    command=cmd_str,
+                    exit_code=exit_code,
+                    duration_ms=dur_ms,
+                    sequence=result.event_sequence,
+                    categories=cats,
+                    is_masked=masked,
+                    display_command=disp_cmd,
+                    output_snippet=completed_summary.get("output_snippet", ""),
+                    classification_text=raw_out,
+                    cwd=cmd_cwd,
+                    bounded_host_execution=False,
+                )
+
+                perms = getattr(self, "current_permissions", ":read-only")
+                if is_verification_command_eligible(summary_obj, permissions=perms):
+                    effective_dir = cmd_cwd or str(getattr(self, "current_cwd", None) or Path.cwd())
+                    self._handle_bounded_verification_offer(
+                        result=result,
+                        cmd_str=cmd_str,
+                        disp_cmd=disp_cmd,
+                        cwd=effective_dir,
+                        raw_record=cmd_record,
+                    )
 
             if (
                 self.live

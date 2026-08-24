@@ -101,9 +101,11 @@ def build_test_environment(
         "TMP": str(tmp_dir),
         "CX_TEST_TEMP_ROOT": str(temp_root),
 
-        # Python: prevent bytecode writing to read-only workspace; redirect any cache
+        # Python: prevent bytecode writing to read-only workspace; redirect any cache; enforce UTF-8
         "PYTHONDONTWRITEBYTECODE": "1",
         "PYTHONPYCACHEPREFIX": str(pycache_dir),
+        "PYTHONIOENCODING": "utf-8",
+        "PYTHONUTF8": "1",
 
         # Go: redirect compilation build cache, disable telemetry for offline determinism
         "GOCACHE": str(gocache_dir),

@@ -100,6 +100,7 @@ $venvBackupDir = $null
 $policyExisted = $false
 $targetPolicy = Join-Path $resolvedTarget "policy.json"
 $venvDir = Join-Path $resolvedTarget "runtime\venv"
+$venvExistedBefore = Test-Path $venvDir
 $venvPython = Join-Path $venvDir "Scripts\python.exe"
 $targetExe = Join-Path $resolvedTarget "bin\cx.exe"
 $targetCmd = Join-Path $resolvedTarget "bin\cx.cmd"
@@ -152,7 +153,7 @@ try {
     $policyExisted = Test-Path $targetPolicy
 
     # 3.3 Backup existing venv via same-volume rename
-    if (Test-Path $venvDir) {
+    if ($venvExistedBefore) {
         $venvBackupDir = Join-Path $resolvedTarget "runtime\venv.backup-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())-$PID"
         Write-Host "[install] Backing up existing virtual environment..." -ForegroundColor Cyan
         try {
@@ -293,12 +294,12 @@ try {
         } catch {
             $rollbackErrors.Add("Failed to restore virtual environment from '$venvBackupDir' to '$venvDir': $($_.Exception.Message)")
         }
-    } elseif (-not $targetDirExisted -and (Test-Path $venvDir)) {
-        # If fresh install created incomplete venv, remove it
+    } elseif (-not $venvExistedBefore -and (Test-Path $venvDir)) {
+        # If this installation created a new venv where none existed before, remove it
         try {
             Remove-Item -Path $venvDir -Recurse -Force -ErrorAction Stop
         } catch {
-            $rollbackErrors.Add("Failed to remove incomplete virtual environment at '$venvDir': $($_.Exception.Message)")
+            $rollbackErrors.Add("Failed to remove newly created virtual environment at '$venvDir': $($_.Exception.Message)")
         }
     }
 

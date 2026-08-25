@@ -97,8 +97,9 @@ class TestInstallerContract(unittest.TestCase):
         self.assertIn('$createdFiles.Add($targetCmd)', self.script_content)
 
     def test_rollback_untouched_venv_preservation(self):
-        # Must not delete existing venv on failure if venv was not backed up
-        self.assertIn("elseif (-not $targetDirExisted -and (Test-Path $venvDir))", self.script_content)
+        # Must model pre-install venv state explicitly rather than using targetDirExisted proxy
+        self.assertIn("$venvExistedBefore = Test-Path $venvDir", self.script_content)
+        self.assertIn("elseif (-not $venvExistedBefore -and (Test-Path $venvDir))", self.script_content)
 
 
 if __name__ == "__main__":

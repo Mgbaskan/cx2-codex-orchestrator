@@ -250,5 +250,177 @@ $ErrorActionPreference = "Stop"
         self.assertIn("ROLLBACK_RESTORE_ERROR_DETAIL", res.stdout)
 
 
+    def test_venv_provenance_case_a_target_absent_venv_absent(self):
+        """Case A: Target absent, venv absent -> newly-created venv must be removed on rollback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / ".cx"
+            # Target does not exist initially
+            venv_dir = target / "runtime" / "venv"
+            # Simulate installer creating target and venv
+            (target / "runtime" / "venv" / "Scripts").mkdir(parents=True)
+            (target / "runtime" / "venv" / "Scripts" / "python.exe").write_text("py", encoding="utf-8")
+
+            ps = f"""
+            $resolvedTarget = "{target}"
+            $venvDir = "{venv_dir}"
+            $venvExistedBefore = $false
+            $venvBackedUp = $false
+            $venvBackupDir = $null
+            $rollbackErrors = [System.Collections.Generic.List[string]]::new()
+
+            # Phase 7.1 Rollback
+            if ($venvBackedUp -and (Test-Path $venvBackupDir)) {{
+                if (Test-Path $venvDir) {{ Remove-Item -Path $venvDir -Recurse -Force -ErrorAction Stop }}
+                Move-Item -Path $venvBackupDir -Destination $venvDir -Force -ErrorAction Stop
+            }} elseif (-not $venvExistedBefore -and (Test-Path $venvDir)) {{
+                try {{
+                    Remove-Item -Path $venvDir -Recurse -Force -ErrorAction Stop
+                }} catch {{
+                    $rollbackErrors.Add("Failed to remove newly created virtual environment: $($_.Exception.Message)")
+                }}
+            }}
+
+            if ($rollbackErrors.Count -eq 0) {{
+                Write-Host "[rollback] Rollback complete. User state was preserved."
+            }}
+            """
+            res = self._run_ps(ps)
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("[rollback] Rollback complete", res.stdout)
+            self.assertFalse(venv_dir.exists(), "Case A: newly created venv must be removed")
+
+    def test_venv_provenance_case_b_target_exists_venv_absent(self):
+        """Case B: Target exists, venv absent -> newly-created venv must be removed on rollback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / ".cx"
+            target.mkdir(parents=True)
+            (target / "policy.json").write_text("{}", encoding="utf-8")
+            venv_dir = target / "runtime" / "venv"
+            # Simulate installer creating venv
+            (target / "runtime" / "venv" / "Scripts").mkdir(parents=True)
+            (target / "runtime" / "venv" / "Scripts" / "python.exe").write_text("py", encoding="utf-8")
+
+            ps = f"""
+            $resolvedTarget = "{target}"
+            $targetDirExisted = $true
+            $venvDir = "{venv_dir}"
+            $venvExistedBefore = $false
+            $venvBackedUp = $false
+            $venvBackupDir = $null
+            $rollbackErrors = [System.Collections.Generic.List[string]]::new()
+
+            # Phase 7.1 Rollback
+            if ($venvBackedUp -and (Test-Path $venvBackupDir)) {{
+                if (Test-Path $venvDir) {{ Remove-Item -Path $venvDir -Recurse -Force -ErrorAction Stop }}
+                Move-Item -Path $venvBackupDir -Destination $venvDir -Force -ErrorAction Stop
+            }} elseif (-not $venvExistedBefore -and (Test-Path $venvDir)) {{
+                try {{
+                    Remove-Item -Path $venvDir -Recurse -Force -ErrorAction Stop
+                }} catch {{
+                    $rollbackErrors.Add("Failed to remove newly created virtual environment: $($_.Exception.Message)")
+                }}
+            }}
+
+            if ($rollbackErrors.Count -eq 0) {{
+                Write-Host "[rollback] Rollback complete. User state was preserved."
+            }}
+            """
+            res = self._run_ps(ps)
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("[rollback] Rollback complete", res.stdout)
+            self.assertFalse(venv_dir.exists(), "Case B: newly created venv on pre-existing target must be removed")
+
+    def test_venv_provenance_case_c_target_exists_venv_exists_backup_succeeds(self):
+        """Case C: Target exists, venv exists, backup succeeds -> old venv restored on rollback."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / ".cx"
+            target.mkdir(parents=True)
+            venv_dir = target / "runtime" / "venv"
+            backup_dir = target / "runtime" / "venv.backup-test"
+
+            # Create backup dir with original sentinel
+            (backup_dir / "Scripts").mkdir(parents=True)
+            (backup_dir / "Scripts" / "original.txt").write_text("ORIGINAL_2010", encoding="utf-8")
+
+            # Create new venv with new sentinel
+            (venv_dir / "Scripts").mkdir(parents=True)
+            (venv_dir / "Scripts" / "new.txt").write_text("NEW_2011", encoding="utf-8")
+
+            ps = f"""
+            $resolvedTarget = "{target}"
+            $targetDirExisted = $true
+            $venvDir = "{venv_dir}"
+            $venvBackupDir = "{backup_dir}"
+            $venvExistedBefore = $true
+            $venvBackedUp = $true
+            $rollbackErrors = [System.Collections.Generic.List[string]]::new()
+
+            # Phase 7.1 Rollback
+            if ($venvBackedUp -and (Test-Path $venvBackupDir)) {{
+                try {{
+                    if (Test-Path $venvDir) {{ Remove-Item -Path $venvDir -Recurse -Force -ErrorAction Stop }}
+                    Move-Item -Path $venvBackupDir -Destination $venvDir -Force -ErrorAction Stop
+                }} catch {{
+                    $rollbackErrors.Add("Failed to restore virtual environment: $($_.Exception.Message)")
+                }}
+            }} elseif (-not $venvExistedBefore -and (Test-Path $venvDir)) {{
+                Remove-Item -Path $venvDir -Recurse -Force -ErrorAction Stop
+            }}
+
+            if ($rollbackErrors.Count -eq 0) {{
+                Write-Host "[rollback] Rollback complete. User state was preserved."
+            }}
+            """
+            res = self._run_ps(ps)
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("[rollback] Rollback complete", res.stdout)
+            self.assertTrue(venv_dir.exists())
+            self.assertFalse(backup_dir.exists())
+            self.assertEqual((venv_dir / "Scripts" / "original.txt").read_text(encoding="utf-8"), "ORIGINAL_2010")
+            self.assertFalse((venv_dir / "Scripts" / "new.txt").exists())
+
+    def test_venv_provenance_case_d_target_exists_venv_exists_backup_fails(self):
+        """Case D: Target exists, venv exists, backup rename fails -> original venv must remain untouched."""
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / ".cx"
+            target.mkdir(parents=True)
+            venv_dir = target / "runtime" / "venv"
+
+            # Create original venv
+            (venv_dir / "Scripts").mkdir(parents=True)
+            (venv_dir / "Scripts" / "original.txt").write_text("ORIGINAL_2010", encoding="utf-8")
+
+            ps = f"""
+            $resolvedTarget = "{target}"
+            $targetDirExisted = $true
+            $venvDir = "{venv_dir}"
+            $venvExistedBefore = $true
+            $venvBackedUp = $false
+            $venvBackupDir = $null
+            $rollbackErrors = [System.Collections.Generic.List[string]]::new()
+
+            # Phase 7.1 Rollback
+            if ($venvBackedUp -and (Test-Path $venvBackupDir)) {{
+                if (Test-Path $venvDir) {{ Remove-Item -Path $venvDir -Recurse -Force -ErrorAction Stop }}
+                Move-Item -Path $venvBackupDir -Destination $venvDir -Force -ErrorAction Stop
+            }} elseif (-not $venvExistedBefore -and (Test-Path $venvDir)) {{
+                try {{
+                    Remove-Item -Path $venvDir -Recurse -Force -ErrorAction Stop
+                }} catch {{
+                    $rollbackErrors.Add("Failed to remove newly created virtual environment: $($_.Exception.Message)")
+                }}
+            }}
+
+            if ($rollbackErrors.Count -eq 0) {{
+                Write-Host "[rollback] Rollback complete. User state was preserved."
+            }}
+            """
+            res = self._run_ps(ps)
+            self.assertEqual(res.returncode, 0)
+            self.assertIn("[rollback] Rollback complete", res.stdout)
+            self.assertTrue(venv_dir.exists(), "Case D: original venv must NEVER be deleted")
+            self.assertEqual((venv_dir / "Scripts" / "original.txt").read_text(encoding="utf-8"), "ORIGINAL_2010")
+
+
 if __name__ == "__main__":
     unittest.main()

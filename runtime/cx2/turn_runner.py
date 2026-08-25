@@ -13,6 +13,8 @@ import time
 
 from typing import (
     Any,
+    Callable,
+    Literal,
     Protocol,
 )
 
@@ -103,6 +105,7 @@ FINAL_STATUSES = {
 }
 
 MAX_INTERACTIVE_APPROVAL_PROMPTS_PER_TURN: int = 6
+TIMEOUT_RECONCILIATION_GRACE_SEC: float = 0.25
 
 
 @dataclass
@@ -111,6 +114,50 @@ class TurnApprovalState:
     declined_identities: set[tuple[str, str, str]] = field(default_factory=set)
     session_accepted_identities: set[tuple[str, str, str]] = field(default_factory=set)
     circuit_warning_rendered: bool = False
+
+
+class TurnTimeoutError(TimeoutError):
+    """Typed, bounded diagnostic for an idle or hard turn timeout."""
+
+    def __init__(
+        self,
+        *,
+        kind: Literal["idle", "hard"],
+        turn_id: str,
+        elapsed_seconds: float,
+        idle_seconds: float,
+        configured_idle_timeout: float,
+        configured_hard_timeout: float,
+        interrupt_requested: bool,
+        last_meaningful_activity_category: str | None,
+        result: "TurnRunResult",
+    ) -> None:
+        self.kind = kind
+        self.turn_id = turn_id
+        self.elapsed_seconds = max(0.0, float(elapsed_seconds))
+        self.idle_seconds = max(0.0, float(idle_seconds))
+        self.configured_idle_timeout = float(configured_idle_timeout)
+        self.configured_hard_timeout = float(configured_hard_timeout)
+        self.interrupt_requested = bool(interrupt_requested)
+        self.last_meaningful_activity_category = (
+            last_meaningful_activity_category
+        )
+        self.result = result
+        super().__init__(f"turn {kind} timeout: {turn_id}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "timeout_kind": self.kind,
+            "turn_id": self.turn_id,
+            "elapsed_seconds": round(self.elapsed_seconds, 3),
+            "idle_seconds": round(self.idle_seconds, 3),
+            "configured_idle_timeout_sec": self.configured_idle_timeout,
+            "configured_hard_timeout_sec": self.configured_hard_timeout,
+            "whether_interrupt_requested": self.interrupt_requested,
+            "last_meaningful_activity_category": (
+                self.last_meaningful_activity_category
+            ),
+        }
 
 
 # =============================================================
@@ -187,6 +234,9 @@ class TurnRunResult:
     reasoning_delta_chars: int = 0
 
     interrupt_requested: bool = False
+
+    timeout_diagnostics: dict[str, Any] | None = None
+    last_meaningful_activity_category: str | None = None
 
     started_at: float | None = None
     completed_at: float | None = None
@@ -1082,6 +1132,9 @@ class StreamingTurnRunner:
         live: bool = True,
         poll_interval: float = 0.03,
         max_approval_prompts_per_turn: int = MAX_INTERACTIVE_APPROVAL_PROMPTS_PER_TURN,
+        monotonic: Callable[[], float] | None = None,
+        sleeper: Callable[[float], None] | None = None,
+        timeout_reconciliation_grace: float = TIMEOUT_RECONCILIATION_GRACE_SEC,
     ) -> None:
 
         self.client = client
@@ -1100,6 +1153,12 @@ class StreamingTurnRunner:
             1,
             int(max_approval_prompts_per_turn),
         )
+        self._monotonic = monotonic or (lambda: time.monotonic())
+        self._sleep = sleeper or (lambda seconds: time.sleep(seconds))
+        self.timeout_reconciliation_grace = max(
+            0.0,
+            min(float(timeout_reconciliation_grace), 5.0),
+        )
 
     # ---------------------------------------------------------
     # turn/start
@@ -1116,7 +1175,9 @@ class StreamingTurnRunner:
         permissions: str,
         approval_policy: str,
         input_items: list[dict] | None = None,
-        timeout: float = 300.0,
+        timeout: float | None = 300.0,
+        idle_timeout: float | None = None,
+        hard_timeout: float | None = None,
     ) -> TurnRunResult:
 
         # CX2_TURN_APPROVAL_POLICY_ARG_V1
@@ -1272,6 +1333,8 @@ class StreamingTurnRunner:
             completed_result = self.wait_for_turn(
                 result,
                 timeout=timeout,
+                idle_timeout=idle_timeout,
+                hard_timeout=hard_timeout,
             )
         except KeyboardInterrupt:
             if result.status not in FINAL_STATUSES:
@@ -1301,51 +1364,53 @@ class StreamingTurnRunner:
         self,
         result: TurnRunResult,
         *,
-        timeout: float,
+        timeout: float | None = None,
+        idle_timeout: float | None = None,
+        hard_timeout: float | None = None,
     ) -> TurnRunResult:
-
-        start_time = time.monotonic()
-        base_deadline = (
-            start_time
-            + timeout
+        # ``timeout`` is retained as a direct-call compatibility alias. The
+        # production runtime supplies both explicit limits.
+        legacy_timeout = 300.0 if timeout is None else float(timeout)
+        resolved_idle_timeout = max(
+            0.001,
+            float(
+                legacy_timeout
+                if idle_timeout is None
+                else idle_timeout
+            ),
         )
-        interrupt_extension = 0.0
+        resolved_hard_timeout = max(
+            resolved_idle_timeout,
+            float(
+                legacy_timeout
+                if hard_timeout is None
+                else hard_timeout
+            ),
+        )
 
+        turn_start_monotonic = self._monotonic()
+        last_meaningful_activity_monotonic = turn_start_monotonic
+        last_meaningful_activity_category = "turn/start-ack"
+        result.last_meaningful_activity_category = (
+            last_meaningful_activity_category
+        )
+        active_work_items: set[str] = set()
         interrupted_once = False
+        user_interrupt_deadline: float | None = None
 
         while True:
 
             try:
-                # Server requests FIRST.
-                #
-                # A server-side approval may pause the turn
-                # until we respond.
-                for request in (
-                    self.client
-                    .drain_server_requests()
-                ):
-                    self._handle_server_request(
-                        result,
-                        request,
-                    )
-
-                for notification in (
-                    self.client
-                    .drain_notifications()
-                ):
-                    self._handle_notification(
-                        result,
-                        notification,
-                    )
-
-                unknown = (
-                    self.client
-                    .drain_unknown()
+                activity_categories = self._drain_turn_events(
+                    result,
+                    active_work_items,
                 )
 
-                if unknown:
-                    result.unknown_messages.extend(
-                        unknown
+                if activity_categories:
+                    last_meaningful_activity_monotonic = self._monotonic()
+                    last_meaningful_activity_category = activity_categories[-1]
+                    result.last_meaningful_activity_category = (
+                        last_meaningful_activity_category
                     )
 
                 if (
@@ -1354,161 +1419,110 @@ class StreamingTurnRunner:
                 ):
                     return result
 
-                # Check process and dispatcher liveness:
-                # If the subprocess terminated or the dispatcher thread exited while
-                # the turn is still inProgress, reconcile any in-flight events before
-                # declaring failure.
-                process = getattr(
-                    self.client,
-                    "process",
-                    None,
-                )
-                dispatcher = getattr(
-                    self.client,
-                    "_dispatcher_thread",
-                    None,
-                )
-
-                poll_code = None
-                if process is not None:
-                    try:
-                        poll_code = (
-                            process.poll()
-                        )
-                    except Exception:
-                        poll_code = None
-
-                dispatcher_alive = (
-                    getattr(
-                        dispatcher,
-                        "is_alive",
-                        lambda: True,
-                    )()
-                    if dispatcher is not None
-                    else True
-                )
-
-                if (
-                    poll_code is not None
-                    or (
-                        dispatcher is not None
-                        and not dispatcher_alive
-                    )
+                if self._reconcile_transport_liveness(
+                    result,
+                    active_work_items,
                 ):
-                    # If the process has exited, give the dispatcher thread a bounded
-                    # window to consume any remaining EOF / buffered lines from stdout.
-                    if (
-                        dispatcher is not None
-                        and getattr(
-                            dispatcher,
-                            "is_alive",
-                            lambda: False,
-                        )()
-                    ):
-                        try:
-                            dispatcher.join(
-                                timeout=1.0
-                            )
-                        except Exception:
-                            pass
+                    return result
 
-                    dispatcher_alive_after_join = (
-                        getattr(
-                            dispatcher,
-                            "is_alive",
-                            lambda: False,
-                        )()
-                        if dispatcher is not None
-                        else False
+                now = self._monotonic()
+                active_elapsed = max(
+                    0.0,
+                    now
+                    - turn_start_monotonic
+                    - result.human_approval_wait_seconds,
+                )
+                idle_elapsed = max(
+                    0.0,
+                    now - last_meaningful_activity_monotonic,
+                )
+
+                timeout_kind: Literal["idle", "hard"] | None = None
+                if active_elapsed >= resolved_hard_timeout:
+                    timeout_kind = "hard"
+                elif (
+                    not active_work_items
+                    and idle_elapsed >= resolved_idle_timeout
+                ):
+                    timeout_kind = "idle"
+
+                if timeout_kind is not None:
+                    # One last drain before interruption. Terminal completion wins;
+                    # progress delivered on an idle boundary starts a new idle window.
+                    boundary_activity = self._drain_turn_events(
+                        result,
+                        active_work_items,
                     )
-
-                    # Perform final drain of any events delivered right up to EOF
-                    for request in (
-                        self.client
-                        .drain_server_requests()
-                    ):
-                        self._handle_server_request(
-                            result,
-                            request,
-                        )
-
-                    for notification in (
-                        self.client
-                        .drain_notifications()
-                    ):
-                        self._handle_notification(
-                            result,
-                            notification,
-                        )
-
-                    unknown = (
-                        self.client
-                        .drain_unknown()
-                    )
-                    if unknown:
-                        result.unknown_messages.extend(
-                            unknown
-                        )
-
-                    # Terminal completion takes precedence if delivered in final drain
-                    if (
-                        result.status
-                        in FINAL_STATUSES
-                    ):
+                    if result.status in FINAL_STATUSES:
                         return result
-
-                    if (
-                        result.status
-                        not in FINAL_STATUSES
-                    ):
-                        result.status = (
-                            "failed"
+                    if boundary_activity and timeout_kind == "idle":
+                        last_meaningful_activity_monotonic = self._monotonic()
+                        last_meaningful_activity_category = boundary_activity[-1]
+                        result.last_meaningful_activity_category = (
+                            last_meaningful_activity_category
                         )
+                        continue
 
-                    if poll_code is not None:
-                        if dispatcher_alive_after_join:
-                            raise AppServerProtocolError(
-                                "Codex App Server process terminated unexpectedly and dispatcher "
-                                f"failed to quiesce within 1.0s grace (exit code: {poll_code}, turn: {result.turn_id})."
-                            )
-                        else:
-                            raise AppServerProtocolError(
-                                "Codex App Server process terminated unexpectedly "
-                                f"(exit code: {poll_code}, turn: {result.turn_id})."
-                            )
-                    else:
-                        raise AppServerProtocolError(
-                            "Codex App Server dispatcher thread terminated unexpectedly "
-                            f"(turn: {result.turn_id})."
-                        )
+                    interrupt_requested = self._request_interrupt_once(result)
+                    reconciliation_now = self._monotonic()
+                    reconciliation_deadline = (
+                        reconciliation_now
+                        + self.timeout_reconciliation_grace
+                    )
+                    while reconciliation_now < reconciliation_deadline:
+                        remaining = reconciliation_deadline - reconciliation_now
+                        self._sleep(min(self.poll_interval, remaining))
+                        self._drain_turn_events(result, active_work_items)
+                        if self._reconcile_transport_liveness(
+                            result,
+                            active_work_items,
+                        ):
+                            break
+                        next_reconciliation_now = self._monotonic()
+                        # A controlled/test clock that does not advance must not
+                        # turn bounded reconciliation into an infinite wait.
+                        if next_reconciliation_now <= reconciliation_now:
+                            break
+                        reconciliation_now = next_reconciliation_now
 
-                effective_deadline = (
-                    base_deadline
-                    + result.human_approval_wait_seconds
-                    + interrupt_extension
-                )
-
-                if (
-                    time.monotonic()
-                    >= effective_deadline
-                ):
-                    try:
-                        self.interrupt(
-                            result.thread_id,
-                            result.turn_id,
-                        )
-                    except Exception:
-                        pass
+                    final_now = reconciliation_now
+                    final_active_elapsed = max(
+                        0.0,
+                        final_now
+                        - turn_start_monotonic
+                        - result.human_approval_wait_seconds,
+                    )
+                    final_idle_elapsed = max(
+                        0.0,
+                        final_now - last_meaningful_activity_monotonic,
+                    )
                     if result.status not in FINAL_STATUSES:
                         result.status = "failed"
-                    raise TimeoutError(
-                        "turn/completed timeout: "
-                        f"{result.turn_id}"
+                    error = TurnTimeoutError(
+                        kind=timeout_kind,
+                        turn_id=result.turn_id,
+                        elapsed_seconds=final_active_elapsed,
+                        idle_seconds=final_idle_elapsed,
+                        configured_idle_timeout=resolved_idle_timeout,
+                        configured_hard_timeout=resolved_hard_timeout,
+                        interrupt_requested=interrupt_requested,
+                        last_meaningful_activity_category=(
+                            last_meaningful_activity_category
+                        ),
+                        result=result,
                     )
+                    result.timeout_diagnostics = error.to_dict()
+                    raise error
 
-                time.sleep(
-                    self.poll_interval
-                )
+                if (
+                    user_interrupt_deadline is not None
+                    and now >= user_interrupt_deadline
+                ):
+                    if result.status not in FINAL_STATUSES:
+                        result.status = "interrupted"
+                    raise KeyboardInterrupt
+
+                self._sleep(self.poll_interval)
 
             except KeyboardInterrupt:
 
@@ -1518,28 +1532,216 @@ class StreamingTurnRunner:
                     raise
 
                 interrupted_once = True
-                result.interrupt_requested = True
 
                 if self.live:
                     _CX2_TERMINAL.interrupting()
 
-                try:
-                    self.interrupt(
-                        result.thread_id,
-                        result.turn_id,
-                    )
-                except Exception:
-                    pass
-
-                # Give App Server time to emit
-                # turn/completed status=interrupted.
-                needed_extension = (
-                    time.monotonic() + 15.0
-                ) - (
-                    base_deadline + result.human_approval_wait_seconds
+                self._request_interrupt_once(result)
+                last_meaningful_activity_monotonic = self._monotonic()
+                last_meaningful_activity_category = "user_interrupt"
+                result.last_meaningful_activity_category = (
+                    last_meaningful_activity_category
                 )
-                if needed_extension > interrupt_extension:
-                    interrupt_extension = needed_extension
+                user_interrupt_deadline = self._monotonic() + 15.0
+
+    @staticmethod
+    def _event_matches_turn(
+        result: TurnRunResult,
+        params: dict[str, Any],
+    ) -> bool:
+        event_thread = params.get("threadId")
+        event_turn = params.get("turnId")
+        nested_turn = params.get("turn")
+        if event_turn is None and isinstance(nested_turn, dict):
+            event_turn = nested_turn.get("id")
+        if (
+            isinstance(event_thread, str)
+            and event_thread
+            and event_thread != result.thread_id
+        ):
+            return False
+        if (
+            isinstance(event_turn, str)
+            and event_turn
+            and event_turn != result.turn_id
+        ):
+            return False
+        return True
+
+    def _notification_activity(
+        self,
+        result: TurnRunResult,
+        notification: dict[str, Any],
+        active_work_items: set[str],
+    ) -> str | None:
+        method = notification.get("method")
+        params = notification.get("params")
+        if not isinstance(method, str) or not isinstance(params, dict):
+            return None
+        if not self._event_matches_turn(result, params):
+            return None
+
+        if method in {"item/started", "item/completed"}:
+            item = params.get("item")
+            if not isinstance(item, dict):
+                return None
+            item_id = item.get("id")
+            item_type = item.get("type")
+            if method == "item/started" and item_type == "commandExecution":
+                if isinstance(item_id, str) and item_id:
+                    active_work_items.add(item_id)
+            elif method == "item/completed":
+                if isinstance(item_id, str) and item_id:
+                    active_work_items.discard(item_id)
+            return method
+
+        if method in {
+            "item/agentMessage/delta",
+            "item/commandExecution/outputDelta",
+            "item/reasoning/summaryTextDelta",
+            "item/reasoning/textDelta",
+        }:
+            delta = params.get("delta")
+            if isinstance(delta, str) and delta:
+                return method
+            return None
+
+        if method == "turn/diff/updated":
+            diff = params.get("diff")
+            return method if isinstance(diff, str) and diff else None
+
+        if method == "rawResponseItem/completed":
+            return method if params.get("item") is not None else None
+
+        if method == "turn/started":
+            return method
+
+        if method in {"warning", "error"}:
+            # Warning/error chatter only counts when explicitly turn-scoped.
+            if params.get("turnId") == result.turn_id:
+                return method
+
+        # Token telemetry and unknown protocol noise deliberately do not count.
+        return None
+
+    def _server_request_activity(
+        self,
+        result: TurnRunResult,
+        request: dict[str, Any],
+    ) -> str | None:
+        method = request.get("method")
+        params = request.get("params")
+        if not isinstance(params, dict):
+            params = {}
+        if not self._event_matches_turn(result, params):
+            return None
+        if method in {
+            "item/commandExecution/requestApproval",
+            "item/fileChange/requestApproval",
+            "item/permissions/requestApproval",
+            "execCommandApproval",
+            "applyPatchApproval",
+        }:
+            return "server_request"
+        return None
+
+    def _drain_turn_events(
+        self,
+        result: TurnRunResult,
+        active_work_items: set[str],
+    ) -> list[str]:
+        activities: list[str] = []
+        # Server requests are handled first because approval may pause the turn.
+        for request in self.client.drain_server_requests():
+            activity = self._server_request_activity(result, request)
+            self._handle_server_request(result, request)
+            if activity is not None:
+                activities.append(activity)
+
+        for notification in self.client.drain_notifications():
+            activity = self._notification_activity(
+                result,
+                notification,
+                active_work_items,
+            )
+            self._handle_notification(result, notification)
+            if activity is not None:
+                activities.append(activity)
+
+        unknown = self.client.drain_unknown()
+        if unknown:
+            result.unknown_messages.extend(unknown)
+        return activities
+
+    def _request_interrupt_once(self, result: TurnRunResult) -> bool:
+        if result.interrupt_requested:
+            return True
+        result.interrupt_requested = True
+        try:
+            self.interrupt(result.thread_id, result.turn_id)
+        except Exception:
+            pass
+        return True
+
+    def _reconcile_transport_liveness(
+        self,
+        result: TurnRunResult,
+        active_work_items: set[str],
+    ) -> bool:
+        process = getattr(self.client, "process", None)
+        dispatcher = getattr(self.client, "_dispatcher_thread", None)
+        poll_code = None
+        if process is not None:
+            try:
+                poll_code = process.poll()
+            except Exception:
+                poll_code = None
+        dispatcher_alive = (
+            getattr(dispatcher, "is_alive", lambda: True)()
+            if dispatcher is not None
+            else True
+        )
+        stopped = (
+            poll_code is not None
+            or (dispatcher is not None and not dispatcher_alive)
+        )
+        if not stopped:
+            return False
+
+        if (
+            dispatcher is not None
+            and getattr(dispatcher, "is_alive", lambda: False)()
+        ):
+            try:
+                dispatcher.join(timeout=1.0)
+            except Exception:
+                pass
+
+        dispatcher_alive_after_join = (
+            getattr(dispatcher, "is_alive", lambda: False)()
+            if dispatcher is not None
+            else False
+        )
+        self._drain_turn_events(result, active_work_items)
+        if result.status in FINAL_STATUSES:
+            return True
+
+        result.status = "failed"
+        if poll_code is not None:
+            if dispatcher_alive_after_join:
+                raise AppServerProtocolError(
+                    "Codex App Server process terminated unexpectedly and dispatcher "
+                    "failed to quiesce within 1.0s grace "
+                    f"(exit code: {poll_code}, turn: {result.turn_id})."
+                )
+            raise AppServerProtocolError(
+                "Codex App Server process terminated unexpectedly "
+                f"(exit code: {poll_code}, turn: {result.turn_id})."
+            )
+        raise AppServerProtocolError(
+            "Codex App Server dispatcher thread terminated unexpectedly "
+            f"(turn: {result.turn_id})."
+        )
 
     # ---------------------------------------------------------
     # Ctrl+C / explicit interrupt
@@ -1603,7 +1805,7 @@ class StreamingTurnRunner:
 
         # Measure human blocking time
         result.interactive_approval_prompt_count += 1
-        t_start = time.monotonic()
+        t_start = self._monotonic()
         try:
             decision = _CX2_TERMINAL.approval_prompt(
                 title=title,
@@ -1612,7 +1814,7 @@ class StreamingTurnRunner:
                 default_decision=safe_default,
             )
         finally:
-            t_end = time.monotonic()
+            t_end = self._monotonic()
             wait_sec = max(0.0, t_end - t_start)
             result.human_approval_wait_seconds += wait_sec
 

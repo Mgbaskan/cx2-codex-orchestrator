@@ -55,6 +55,7 @@ from telemetry_adapter import (
 from turn_runner import (
     StreamingTurnRunner,
     TurnRunResult,
+    TurnTimeoutError,
     _CX2_TERMINAL,
 )
 
@@ -73,45 +74,69 @@ from required_verification import (
 
 
 EXPECTED_ROUTER_VERSION = "1.2.2"
-RUNTIME_VERSION = "2.0.11"
+RUNTIME_VERSION = "2.0.12"
 
-DEFAULT_TURN_TIMEOUTS: dict[str, float] = {
+DEFAULT_TURN_IDLE_TIMEOUTS: dict[str, float] = {
     "routine": 300.0,
     "standard": 450.0,
     "deep": 600.0,
 }
+DEFAULT_TURN_HARD_TIMEOUTS: dict[str, float] = {
+    "routine": 1800.0,
+    "standard": 2700.0,
+    "deep": 3600.0,
+}
 
-MIN_TURN_TIMEOUT_SEC: float = 30.0
-MAX_TURN_TIMEOUT_SEC: float = 1800.0
+# Compatibility names for callers that treated the former absolute timeout as
+# the tier timeout. It now denotes the idle limit.
+DEFAULT_TURN_TIMEOUTS = DEFAULT_TURN_IDLE_TIMEOUTS
+
+MIN_TURN_IDLE_TIMEOUT_SEC: float = 30.0
+MAX_TURN_IDLE_TIMEOUT_SEC: float = 1800.0
+MIN_TURN_HARD_TIMEOUT_SEC: float = 60.0
+MAX_TURN_HARD_TIMEOUT_SEC: float = 7200.0
+MIN_TURN_TIMEOUT_SEC = MIN_TURN_IDLE_TIMEOUT_SEC
+MAX_TURN_TIMEOUT_SEC = MAX_TURN_IDLE_TIMEOUT_SEC
 
 
-def resolve_turn_timeout(
+@dataclass(frozen=True)
+class TurnTimeoutLimits:
+    idle_timeout_sec: float
+    hard_timeout_sec: float
+
+
+def _bounded_timeout_value(
+    raw_value: Any,
+    *,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    import math
+
+    if isinstance(raw_value, bool) or not isinstance(raw_value, (int, float)):
+        return default
+    try:
+        numeric_value = float(raw_value)
+    except (OverflowError, TypeError, ValueError):
+        return default
+    if not math.isfinite(numeric_value):
+        return default
+    return max(minimum, min(numeric_value, maximum))
+
+
+def resolve_turn_timeouts(
     route_or_tier: dict[str, Any] | str | None,
     policy: dict[str, Any] | None = None,
-) -> float:
-    """
-    Resolve deterministic, bounded turn timeout in seconds based on effective route tier and policy overrides.
+) -> TurnTimeoutLimits:
+    """Resolve bounded idle/hard limits with deterministic legacy precedence.
 
-    Default timeouts:
-      - routine:  300.0s (5.0 min)
-      - standard: 450.0s (7.5 min)
-      - deep:     600.0s (10.0 min)
-
-    Policy configuration schema:
-      {
-        "execution": {
-          "turn_timeout_sec": {
-            "routine": 300,
-            "standard": 450,
-            "deep": 600
-          }
-        }
-      }
-
-    Validation rules:
-      - Missing policy/section/key => deterministic default for tier.
-      - Non-numeric / boolean / NaN / Inf => deterministic default for tier.
-      - Out-of-bounds numbers => clamped to [MIN_TURN_TIMEOUT_SEC, MAX_TURN_TIMEOUT_SEC].
+    ``turn_idle_timeout_sec`` wins when that map exists. Only when the new idle
+    map is absent does legacy ``turn_timeout_sec`` override the idle default.
+    The hard limit always resolves independently from
+    ``turn_hard_timeout_sec`` or its tier default. If hard resolves below idle,
+    hard is raised to idle; turns therefore remain finite without discarding a
+    deliberate idle setting.
     """
     if isinstance(route_or_tier, dict):
         tier = str(route_or_tier.get("tier") or "routine").lower().strip()
@@ -119,37 +144,48 @@ def resolve_turn_timeout(
         tier = route_or_tier.lower().strip()
     else:
         tier = "routine"
-
-    if tier not in DEFAULT_TURN_TIMEOUTS:
+    if tier not in DEFAULT_TURN_IDLE_TIMEOUTS:
         tier = "routine"
 
-    default_timeout = DEFAULT_TURN_TIMEOUTS[tier]
-
-    if not isinstance(policy, dict):
-        return default_timeout
-
-    execution_cfg = policy.get("execution")
+    idle_default = DEFAULT_TURN_IDLE_TIMEOUTS[tier]
+    hard_default = DEFAULT_TURN_HARD_TIMEOUTS[tier]
+    execution_cfg = (
+        policy.get("execution")
+        if isinstance(policy, dict)
+        else None
+    )
     if not isinstance(execution_cfg, dict):
-        return default_timeout
+        return TurnTimeoutLimits(idle_default, hard_default)
 
-    timeout_cfg = execution_cfg.get("turn_timeout_sec")
-    if not isinstance(timeout_cfg, dict):
-        return default_timeout
+    if "turn_idle_timeout_sec" in execution_cfg:
+        idle_cfg = execution_cfg.get("turn_idle_timeout_sec")
+    else:
+        idle_cfg = execution_cfg.get("turn_timeout_sec")
+    hard_cfg = execution_cfg.get("turn_hard_timeout_sec")
 
-    raw_val = timeout_cfg.get(tier)
-    # Reject booleans (isinstance(True, int) is True in Python)
-    if isinstance(raw_val, bool) or raw_val is None:
-        return default_timeout
+    idle_raw = idle_cfg.get(tier) if isinstance(idle_cfg, dict) else None
+    hard_raw = hard_cfg.get(tier) if isinstance(hard_cfg, dict) else None
+    idle = _bounded_timeout_value(
+        idle_raw,
+        default=idle_default,
+        minimum=MIN_TURN_IDLE_TIMEOUT_SEC,
+        maximum=MAX_TURN_IDLE_TIMEOUT_SEC,
+    )
+    hard = _bounded_timeout_value(
+        hard_raw,
+        default=hard_default,
+        minimum=MIN_TURN_HARD_TIMEOUT_SEC,
+        maximum=MAX_TURN_HARD_TIMEOUT_SEC,
+    )
+    return TurnTimeoutLimits(idle, max(idle, hard))
 
-    if not isinstance(raw_val, (int, float)):
-        return default_timeout
 
-    import math
-    if math.isnan(raw_val) or math.isinf(raw_val):
-        return default_timeout
-
-    # Clamp to safe bounds [MIN_TURN_TIMEOUT_SEC, MAX_TURN_TIMEOUT_SEC]
-    return max(MIN_TURN_TIMEOUT_SEC, min(float(raw_val), MAX_TURN_TIMEOUT_SEC))
+def resolve_turn_timeout(
+    route_or_tier: dict[str, Any] | str | None,
+    policy: dict[str, Any] | None = None,
+) -> float:
+    """Compatibility resolver returning the effective idle timeout."""
+    return resolve_turn_timeouts(route_or_tier, policy).idle_timeout_sec
 
 
 BROAD_AUDIT_DEVELOPER_INSTRUCTIONS = """
@@ -1052,7 +1088,7 @@ class CX2Runtime:
                     quota=quota,
                 )
 
-            attempt_timeout = resolve_turn_timeout(
+            attempt_timeouts = resolve_turn_timeouts(
                 attempt_route,
                 policy,
             )
@@ -1068,7 +1104,8 @@ class CX2Runtime:
                 permissions=permissions,
                 approval_policy=approval_policy,
                 input_items=input_items,
-                timeout=attempt_timeout,
+                idle_timeout=attempt_timeouts.idle_timeout_sec,
+                hard_timeout=attempt_timeouts.hard_timeout_sec,
             )
 
             attempts_used += 1
@@ -1198,7 +1235,7 @@ class CX2Runtime:
                     "Destructive işlem yapma."
                 )
 
-                cont_timeout = resolve_turn_timeout(
+                cont_timeouts = resolve_turn_timeouts(
                     attempt_route,
                     policy,
                 )
@@ -1211,7 +1248,8 @@ class CX2Runtime:
                     effort=effort,
                     permissions=permissions,
                     approval_policy=approval_policy,
-                    timeout=cont_timeout,
+                    idle_timeout=cont_timeouts.idle_timeout_sec,
+                    hard_timeout=cont_timeouts.hard_timeout_sec,
                 )
 
                 attempts_used += 1
@@ -1400,15 +1438,24 @@ __all__ = [
     "CX2ExecutionResult",
     "CX2Runtime",
     "CX2RuntimeError",
+    "DEFAULT_TURN_HARD_TIMEOUTS",
+    "DEFAULT_TURN_IDLE_TIMEOUTS",
     "DEFAULT_TURN_TIMEOUTS",
     "EXPECTED_ROUTER_VERSION",
+    "MAX_TURN_HARD_TIMEOUT_SEC",
+    "MAX_TURN_IDLE_TIMEOUT_SEC",
     "MAX_TURN_TIMEOUT_SEC",
+    "MIN_TURN_HARD_TIMEOUT_SEC",
+    "MIN_TURN_IDLE_TIMEOUT_SEC",
     "MIN_TURN_TIMEOUT_SEC",
     "ProductionResultView",
     "ProductionStatusView",
     "RUNTIME_VERSION",
+    "TurnTimeoutError",
+    "TurnTimeoutLimits",
     "developer_instructions_for_route",
     "initialize_params",
     "is_broad_project_audit",
     "resolve_turn_timeout",
+    "resolve_turn_timeouts",
 ]

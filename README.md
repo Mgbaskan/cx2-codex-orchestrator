@@ -799,7 +799,7 @@ Policy controls behavior such as:
 - reasoning levels (`routine: low`, `standard: medium`, `deep: high`)
 - model preferences and fallbacks
 - budget thresholds (70%, 85%, 95%, 100%)
-- tier execution timeouts (`routine: 300s`, `standard: 450s`, `deep: 600s`, override via `execution.turn_timeout_sec`)
+- progress-aware idle timeouts (`routine: 300s`, `standard: 450s`, `deep: 600s`) and finite hard limits (`1800s`, `2700s`, `3600s`), configurable under `execution.turn_idle_timeout_sec` / `execution.turn_hard_timeout_sec` with legacy `turn_timeout_sec` accepted as an idle override
 - escalation
 - runtime features
 - experimental integrations

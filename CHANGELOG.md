@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Replaced the progress-insensitive absolute turn deadline with distinct monotonic idle and hard timeouts. Meaningful turn events extend idle time, active commands suppress idle expiry while remaining hard-bounded, and human approval wait remains excluded from charged runtime.
+- Timeout handling now performs a final completion-winning drain, requests `turn/interrupt` at most once, and retains bounded partial command diagnostics in a typed idle/hard timeout failure.
+- Ordinary interactive prompts and `/paste` now share one exception boundary, so expected timeouts render cleanly without escaping to the CLI traceback handler.
+
+### Changed
+- Development CLI and runtime versions are `2.0.12`; Router remains `1.2.2` and the validated Codex baseline remains `0.144.4`.
+- Added explicit `execution.turn_idle_timeout_sec` and `execution.turn_hard_timeout_sec` tier maps while retaining `execution.turn_timeout_sec` as a backward-compatible idle override.
+
 ## [2.0.11] - 2026-08-25
 
 ### Fixed

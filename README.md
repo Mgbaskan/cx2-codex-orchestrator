@@ -622,7 +622,7 @@ before upgrading.
 Open a Git repository:
 
 ```powershell
-cd C:\Projects\my-project
+cd C:\Users\example-user\Projects\sample-project
 ```
 
 Start CX2:

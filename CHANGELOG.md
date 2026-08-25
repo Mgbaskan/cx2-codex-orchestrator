@@ -75,7 +75,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Qualification
 - Validated with 355 deterministic regression tests across normal discovery and isolated profile environments.
-- Qualified through Windows quoting matrix (15 variations), 50-offer approval soak, 11 failure semantics scenarios, output soak up to 100 MB, 20 timeout process-tree cycles, 50-turn interactive shell resilience soak, 6 real model canaries, and live HIBRIT Jest canary.
+- Qualified through Windows quoting matrix (15 variations), 50-offer approval soak, 11 failure semantics scenarios, output soak up to 100 MB, 20 timeout process-tree cycles, 50-turn interactive shell resilience soak, 6 real model canaries, and a live Jest sample-workload canary.
 
 ## [2.0.9] - 2026-08-24
 

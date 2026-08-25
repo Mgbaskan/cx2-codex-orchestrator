@@ -2,6 +2,10 @@
 __pycache__/
 *.py[cod]
 *$py.class
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
 .venv/
 venv/
 runtime/venv/
@@ -14,6 +18,13 @@ backups/
 *.sqlite
 *.sqlite3
 *.db
+
+# Local qualification and scratch evidence
+scratch/
+phase*-evidence.*
+*_evidence.json
+runtime/cx2/*-last.json
+runtime/cx2/cx2-cli-last-crash.txt
 
 # Security & Credentials
 auth.json

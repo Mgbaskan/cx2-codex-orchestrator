@@ -10,10 +10,20 @@ import tempfile
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def resolve_isolated_temp_parent() -> Path:
+    return (
+        Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "Temp"
+    ).resolve()
+
+
 def main() -> int:
     # Keep all disposable interpreter/tool caches outside the repository. The
     # process environment is local to this test run and never mutates user policy.
-    with tempfile.TemporaryDirectory(prefix="cx2-isolated-tests-") as temp_dir:
+    temp_parent = resolve_isolated_temp_parent()
+    temp_parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix="cx2-isolated-tests-", dir=temp_parent
+    ) as temp_dir:
         temp_root = Path(temp_dir)
         env = os.environ.copy()
         paths = {

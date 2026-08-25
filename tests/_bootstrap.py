@@ -19,6 +19,9 @@ TESTS_DIR = REPO_ROOT / "tests"
 # Development modules otherwise resolve Path.home()/.cx and can overwrite the
 # installed runtime's mutable logs during tests. Give the entire test process a
 # disposable external home before any repository runtime module is imported.
+ORIGINAL_USER_HOME = Path(
+    os.environ.get("USERPROFILE") or os.environ.get("HOME") or Path.home()
+).resolve()
 _temp_parent = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "Temp"
 _temp_parent.mkdir(parents=True, exist_ok=True)
 TEST_USER_HOME = Path(
@@ -26,6 +29,12 @@ TEST_USER_HOME = Path(
 ).resolve()
 os.environ["USERPROFILE"] = str(TEST_USER_HOME)
 os.environ["HOME"] = str(TEST_USER_HOME)
+TEST_TEMP_ROOT = TEST_USER_HOME
+for _temp_name in ("TEMP", "TMP", "TMPDIR"):
+    os.environ[_temp_name] = str(TEST_TEMP_ROOT)
+# tempfile may have cached the inherited runner location before this bootstrap
+# was imported, so environment overrides alone are not deterministic.
+tempfile.tempdir = str(TEST_TEMP_ROOT)
 
 
 @atexit.register

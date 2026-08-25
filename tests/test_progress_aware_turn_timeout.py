@@ -6,9 +6,10 @@ import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
-RUNTIME = ROOT / "runtime" / "cx2"
-if str(RUNTIME) not in sys.path:
-    sys.path.insert(0, str(RUNTIME))
+TESTS = ROOT / "tests"
+if str(TESTS) not in sys.path:
+    sys.path.insert(0, str(TESTS))
+import _bootstrap
 
 from turn_runner import StreamingTurnRunner, TurnRunResult, TurnTimeoutError
 

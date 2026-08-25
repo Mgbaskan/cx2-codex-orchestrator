@@ -1,7 +1,9 @@
 import os
 import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "tests"))
@@ -21,6 +23,7 @@ import history_cli
 import budget_adapter
 import telemetry_adapter
 import cx as production_cx
+from scripts import run_isolated_tests
 
 
 class TestCxHomeResolver(unittest.TestCase):
@@ -171,6 +174,89 @@ class TestCxHomeResolver(unittest.TestCase):
         self.assertEqual(history_cli.CX_HOME, expected_home)
         self.assertEqual(budget_adapter.CX_HOME, expected_home)
         self.assertEqual(telemetry_adapter.CX_HOME, expected_home)
+
+    def test_repository_write_targets_stay_in_disposable_home(self):
+        """Repository imports must never target the original user's CX state."""
+        disposable_home = _bootstrap.TEST_USER_HOME.resolve()
+        disposable_cx = (disposable_home / ".cx").resolve()
+        original_cx = (_bootstrap.ORIGINAL_USER_HOME / ".cx").resolve()
+
+        self.assertEqual(Path.home().resolve(), disposable_home)
+        self.assertEqual(Path(os.environ["USERPROFILE"]).resolve(), disposable_home)
+        self.assertEqual(Path(os.environ["HOME"]).resolve(), disposable_home)
+        self.assertEqual(Path(tempfile.gettempdir()).resolve(), _bootstrap.TEST_TEMP_ROOT)
+        for temp_name in ("TEMP", "TMP", "TMPDIR"):
+            self.assertEqual(
+                Path(os.environ[temp_name]).resolve(), _bootstrap.TEST_TEMP_ROOT
+            )
+        self.assertNotEqual(disposable_cx, original_cx)
+        self.assertEqual(resolve_cx_home(), disposable_cx)
+
+        targets = {
+            "crash log": cx2_cli.CX2_HOME / "cx2-cli-last-crash.txt",
+            "App Server stderr": client.STDERR_FILE,
+            "usage/session DB": production_cx.DB_FILE,
+            "policy": production_cx.POLICY_FILE,
+            "runtime log": production_cx.LOG_FILE,
+            "model cache": production_cx.MODEL_CACHE_FILE,
+            "quota state": production_cx.QUOTA_FILE,
+        }
+        for label, target in targets.items():
+            with self.subTest(target=label):
+                resolved = target.resolve()
+                self.assertTrue(_is_subpath(resolved, disposable_cx))
+                self.assertFalse(_is_subpath(resolved, original_cx))
+
+    def test_diagnostic_write_spies_use_disposable_targets(self):
+        """Exercise diagnostic write paths with spies; no filesystem write occurs."""
+        expected_crash = (
+            _bootstrap.TEST_USER_HOME
+            / ".cx"
+            / "runtime"
+            / "cx2"
+            / "cx2-cli-last-crash.txt"
+        ).resolve()
+        with patch.object(Path, "mkdir", autospec=True), patch.object(
+            Path, "write_text", autospec=True
+        ) as write_text:
+            cx2_cli._write_crash_log(RuntimeError("synthetic isolation probe"))
+        self.assertEqual(write_text.call_count, 1)
+        self.assertEqual(write_text.call_args.args[0].resolve(), expected_crash)
+
+        class _StoppedProcess:
+            stdin = None
+            stdout = None
+            stderr = None
+
+            @staticmethod
+            def wait(timeout=None):
+                return 0
+
+        app_server = client.AppServerClient(Path("synthetic-codex.exe"))
+        app_server.process = _StoppedProcess()
+        with patch.object(Path, "write_text", autospec=True) as write_text:
+            app_server.close()
+        expected_stderr = (
+            _bootstrap.TEST_USER_HOME
+            / ".cx"
+            / "runtime"
+            / "cx2"
+            / "app-server-stderr.log"
+        ).resolve()
+        self.assertEqual(write_text.call_count, 1)
+        self.assertEqual(write_text.call_args.args[0].resolve(), expected_stderr)
+
+    def test_isolated_runner_outer_temp_avoids_real_agent_cache(self):
+        outer_temp = run_isolated_tests.resolve_isolated_temp_parent()
+        real_agent_cache = (
+            _bootstrap.ORIGINAL_USER_HOME / ".codex-agent-cache"
+        ).resolve()
+        self.assertFalse(_is_subpath(outer_temp, real_agent_cache))
+        if os.environ.get("LOCALAPPDATA"):
+            self.assertEqual(
+                outer_temp,
+                (Path(os.environ["LOCALAPPDATA"]) / "Temp").resolve(),
+            )
 
 
 if __name__ == "__main__":

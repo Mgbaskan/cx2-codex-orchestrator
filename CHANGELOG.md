@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sandbox-write failures such as `EPERM` on legitimate verification temporary directory and cache writes can now reach the explicit bounded-verification approval path in the real streamed App Server lifecycle.
 - Genuine test, typecheck, lint, and build failures take precedence over permission noise and are not offered bounded-host retry.
 - Custom -TargetDir installations now resolve CX runtime state and the bundled Codex binary from their own installed runtime instead of falling back to the default user .cx directory.
+- Upgrades and installations that encounter a mid-flight failure now execute exhaustive transactional rollback with per-operation error handling, ensuring newly created files (such as `cx_home.py`) are completely removed, pre-existing files and virtual environments are fully restored to baseline, and rollback status (complete vs incomplete) is truthfully reported without masking errors.
 
 ### Reliability
 - Command diagnostic retention uses a bounded per-command head+tail window: first 64 KiB + most recent 448 KiB, retaining at most 512 KiB of diagnostic bytes per command. Retained command-diagnostic memory is bounded per command and independent of total streamed byte volume for that command.
@@ -33,8 +34,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CX2's bounded-verification path does not permission-alter or permanently redirect the shared `.codex-agent-cache` directory. Ordinary Codex-managed cache behavior remains unchanged.
 
 ### Qualification
-- Validated with 383 deterministic regression tests across normal discovery and isolated profile environments.
-- Qualified through 32 sandbox-block soak cycles, 42 failure-conflict cycles, 36 late-evidence fail-closed variations, 50 interleaved multi-command items, large stream soak up to 100 MB, 14 live App Server turns (zero tracebacks, zero stuck turns, read-only persistence maintained), and representative multi-suite backend verification canary (18 suites passed, 1 skipped; 51 tests passed, 1 skipped; 0 failures).
+- Validated with 404 deterministic regression tests across normal discovery and isolated profile environments.
+- Qualified through 32 sandbox-block soak cycles, 42 failure-conflict cycles, 36 late-evidence fail-closed variations, 50 interleaved multi-command items, large stream soak up to 100 MB, 14 live App Server turns (zero tracebacks, zero stuck turns, read-only persistence maintained), representative multi-suite backend verification canary (18 suites passed, 1 skipped; 51 tests passed, 1 skipped; 0 failures), and comprehensive installer rollback matrix (Case A recoverable, Case B obstructed, Case C recovery upgrade, custom target root isolation, side-by-side mutual isolation).
 
 ## [2.0.10] - 2026-08-24
 

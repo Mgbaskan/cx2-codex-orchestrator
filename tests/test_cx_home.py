@@ -55,7 +55,7 @@ class TestCxHomeResolver(unittest.TestCase):
 
     def test_source_development_mode_not_detected_as_installed(self):
         """Repository source run with .venv must NOT identify repo root as installed runtime."""
-        repo_root = Path(r"C:\Projects\cx2-codex-orchestrator")
+        repo_root = Path(r"C:\Users\example-user\Projects\sample-project")
         mock_module = repo_root / "runtime" / "cx2" / "cx_home.py"
         mock_exe = repo_root / ".venv" / "Scripts" / "python.exe"
 

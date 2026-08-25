@@ -32,16 +32,16 @@ class TestRequiredVerification(unittest.TestCase):
     # 1. EXTRACTION TESTS (Section 28)
     # =========================================================================
 
-    def test_01_exact_hibrit_matrix_extraction(self) -> None:
+    def test_01_exact_sample_project_matrix_extraction(self) -> None:
         """
-        Exact HIBRIT fixture extraction:
+        Exact sample-project fixture extraction:
         Mobile/root: 2 gates
         Backend: 3 gates
         Web: 3 gates
         Total: exactly 8 unique gates.
         """
         prompt = """
-# HIBRIT MONOREPO ARCHITECTURE AUDIT AND REFACTOR PLAN
+# SAMPLE-PROJECT MONOREPO ARCHITECTURE AUDIT AND REFACTOR PLAN
 
 Mobil, backend ve web katmanlarındaki P0-01/P0-02 maddelerini plana göre tamamla; test, lint ve build kapılarını çalıştır.
 
@@ -398,13 +398,13 @@ Web:
     # 5. ASSURANCE INTEGRATION & MODEL PROSE NON-AUTHORITY (Section 20, 26, 31)
     # =========================================================================
 
-    def test_34_hibrit_synthetic_7_of_8_ledger(self) -> None:
+    def test_34_sample_project_synthetic_7_of_8_ledger(self) -> None:
         """
         Synthetic 7/8 execution:
         Even if mutation test passed on backend, missing 1 gate prevents VERIFIED status.
         Result must be PARTIALLY_VERIFIED, NOT VERIFIED.
         """
-        hibrit_plan = extract_required_verification_plan("""
+        sample_plan = extract_required_verification_plan("""
 QUALITY GATES
 Mobile/root:
 - npx tsc --noEmit
@@ -432,7 +432,7 @@ Web:
             changed_files=["backend/src/service.ts"],
             command_executions=cmds,
             last_mutation_seq=5,
-            required_plan=hibrit_plan,
+            required_plan=sample_plan,
         )
 
         self.assertEqual(assessment.status, "PARTIALLY_VERIFIED")
@@ -441,12 +441,12 @@ Web:
         self.assertEqual(assessment.required_coverage.passed_count, 7)
         self.assertEqual(assessment.required_coverage.missing_count, 1)
 
-    def test_35_hibrit_synthetic_8_of_8_ledger(self) -> None:
+    def test_35_sample_project_synthetic_8_of_8_ledger(self) -> None:
         """
         Synthetic 8/8 execution:
         All 8 gates observed and passed -> assessment is VERIFIED.
         """
-        hibrit_plan = extract_required_verification_plan("""
+        sample_plan = extract_required_verification_plan("""
 QUALITY GATES
 Mobile/root:
 - npx tsc --noEmit
@@ -474,7 +474,7 @@ Web:
             changed_files=["backend/src/service.ts"],
             command_executions=cmds,
             last_mutation_seq=5,
-            required_plan=hibrit_plan,
+            required_plan=sample_plan,
         )
 
         self.assertEqual(assessment.status, "VERIFIED")
@@ -488,7 +488,7 @@ Web:
         Coverage is PARTIALLY_PASSED (1 passed, 7 missing).
         Final assurance is UNVERIFIED (NOT VERIFIED).
         """
-        hibrit_plan = extract_required_verification_plan("""
+        sample_plan = extract_required_verification_plan("""
 QUALITY GATES
 Mobile/root:
 - npx tsc --noEmit
@@ -510,7 +510,7 @@ Web:
             changed_files=["backend/src/service.ts"],
             command_executions=cmds,
             last_mutation_seq=5,
-            required_plan=hibrit_plan,
+            required_plan=sample_plan,
         )
 
         self.assertNotEqual(assessment.status, "VERIFIED")
@@ -584,7 +584,7 @@ Web:
 
     def test_40_coverage_one_of_eight_is_partially_passed(self) -> None:
         """1 passed out of 8 required gates -> coverage status is PARTIALLY_PASSED."""
-        hibrit_plan = extract_required_verification_plan("""
+        sample_plan = extract_required_verification_plan("""
 QUALITY GATES
 Mobile/root:
 - npx tsc --noEmit
@@ -601,7 +601,7 @@ Web:
         cmds = [
             {"command": "cd backend && npm run build", "exit_code": 0, "categories": ["BUILD"], "sequence": 1},
         ]
-        cov = evaluate_required_coverage(hibrit_plan, cmds)
+        cov = evaluate_required_coverage(sample_plan, cmds)
         self.assertEqual(cov.status, "PARTIALLY_PASSED")
         self.assertEqual(cov.passed_count, 1)
         self.assertEqual(cov.missing_count, 7)
@@ -769,7 +769,7 @@ Web:
         self.assertEqual(summary.cwd, r"C:\repo\backend")
 
     def test_49_required_coverage_synthetic_surface_ledger_8_of_8_pass(self) -> None:
-        """Full 8-gate HIBRIT/canary plan with synthetic observed executions containing actual subproject cwd produces 8/8 ALL_PASSED."""
+        """Full 8-gate sample-project/canary plan with synthetic observed executions containing actual subproject cwd produces 8/8 ALL_PASSED."""
         prompt = """
 # CANARY PLAN
 

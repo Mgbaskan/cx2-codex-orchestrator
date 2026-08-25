@@ -25,7 +25,7 @@ import telemetry_adapter
 
 
 REPO = Path(
-    r"C:\Projects\docker_projects\hibrit_app"
+    r"C:\Users\example-user\Projects\sample-app"
 ).resolve()
 
 

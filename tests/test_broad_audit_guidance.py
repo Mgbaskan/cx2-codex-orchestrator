@@ -43,7 +43,7 @@ class TestBroadAuditGuidance(unittest.TestCase):
             },
         }
         self.dummy_repo = {
-            "root": Path("C:/Projects/docker_projects/seitoon"),
+            "root": Path("C:/Users/example-user/Projects/sample-service"),
             "git": True,
             "tracked_files": 250,
             "tracked_files_bucket": "medium",

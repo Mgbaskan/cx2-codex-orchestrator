@@ -75,9 +75,9 @@ class TestPhase11EligibilityAndNonEligibleFailures(unittest.TestCase):
             duration_ms=200,
             sequence=1,
             categories=["TEST"],
-            output_snippet="EPERM: operation not permitted, mkdir 'C:\\Users\\muugo\\.codex-agent-cache\\tmp\\jest'",
-            classification_text="EPERM: operation not permitted, mkdir 'C:\\Users\\muugo\\.codex-agent-cache\\tmp\\jest'",
-            cwd="C:\\Projects\\repo",
+            output_snippet="EPERM: operation not permitted, mkdir 'C:\\Users\\example-user\\.codex-agent-cache\\tmp\\jest'",
+            classification_text="EPERM: operation not permitted, mkdir 'C:\\Users\\example-user\\.codex-agent-cache\\tmp\\jest'",
+            cwd="C:\\Users\\example-user\\Projects\\fixture-repo",
         )
         self.assertTrue(is_verification_command_eligible(summary, permissions=":read-only"))
 
@@ -90,7 +90,7 @@ class TestPhase11EligibilityAndNonEligibleFailures(unittest.TestCase):
             categories=["BUILD"],
             output_snippet="EROFS: read-only file system, open '.next/BUILD_ID'",
             classification_text="EROFS: read-only file system, open '.next/BUILD_ID'",
-            cwd="C:\\Projects\\repo",
+            cwd="C:\\Users\\example-user\\Projects\\fixture-repo",
         )
         self.assertTrue(is_verification_command_eligible(summary, permissions=":read-only"))
 
@@ -104,7 +104,7 @@ class TestPhase11EligibilityAndNonEligibleFailures(unittest.TestCase):
             categories=["LINT"],
             output_snippet="failed to initialize build cache: network host unreachable",
             classification_text="failed to initialize build cache: network host unreachable",
-            cwd="C:\\Projects\\repo",
+            cwd="C:\\Users\\example-user\\Projects\\fixture-repo",
         )
         outcome = classify_command_outcome(summary)
         self.assertEqual(outcome.reason_code, "ENVIRONMENT_INIT_FAILED")
@@ -120,7 +120,7 @@ class TestPhase11EligibilityAndNonEligibleFailures(unittest.TestCase):
             categories=["TEST"],
             output_snippet="FAIL tests/example.test.js\n● Test Suite failed: Expected 2 received 3\n1 failed, 0 passed",
             classification_text="FAIL tests/example.test.js\n● Test Suite failed: Expected 2 received 3\n1 failed, 0 passed",
-            cwd="C:\\Projects\\repo",
+            cwd="C:\\Users\\example-user\\Projects\\fixture-repo",
         )
         outcome = classify_command_outcome(summary)
         self.assertEqual(outcome.outcome, "FAILED")
@@ -137,7 +137,7 @@ class TestPhase11EligibilityAndNonEligibleFailures(unittest.TestCase):
             categories=["TYPECHECK"],
             output_snippet="src/index.ts(12,5): error TS2322: Type 'string' is not assignable to type 'number'.",
             classification_text="src/index.ts(12,5): error TS2322: Type 'string' is not assignable to type 'number'.",
-            cwd="C:\\Projects\\repo",
+            cwd="C:\\Users\\example-user\\Projects\\fixture-repo",
         )
         outcome = classify_command_outcome(summary)
         self.assertEqual(outcome.outcome, "FAILED")
@@ -154,7 +154,7 @@ class TestPhase11EligibilityAndNonEligibleFailures(unittest.TestCase):
             categories=["LINT"],
             output_snippet="1 problem (1 error, 0 warnings)\n  3:10  error  'foo' is defined but never used",
             classification_text="1 problem (1 error, 0 warnings)\n  3:10  error  'foo' is defined but never used",
-            cwd="C:\\Projects\\repo",
+            cwd="C:\\Users\\example-user\\Projects\\fixture-repo",
         )
         outcome = classify_command_outcome(summary)
         self.assertEqual(outcome.outcome, "FAILED")
@@ -171,7 +171,7 @@ class TestPhase11EligibilityAndNonEligibleFailures(unittest.TestCase):
             categories=["TEST"],
             output_snippet="'nonexistent_tool' is not recognized as an internal or external command",
             classification_text="'nonexistent_tool' is not recognized as an internal or external command",
-            cwd="C:\\Projects\\repo",
+            cwd="C:\\Users\\example-user\\Projects\\fixture-repo",
         )
         outcome = classify_command_outcome(summary)
         self.assertEqual(outcome.outcome, "BLOCKED")
@@ -188,7 +188,7 @@ class TestPhase11EligibilityAndNonEligibleFailures(unittest.TestCase):
             categories=["OTHER"],
             output_snippet="EPERM: operation not permitted",
             classification_text="EPERM: operation not permitted",
-            cwd="C:\\Projects\\repo",
+            cwd="C:\\Users\\example-user\\Projects\\fixture-repo",
         )
         self.assertFalse(is_verification_command_eligible(summary, permissions=":read-only"))
 
@@ -208,7 +208,7 @@ class TestPhase11ExactIdentityAdversarial(unittest.TestCase):
         ]
 
         identities = {
-            ("bounded_verification_exec", "C:\\Projects\\repo", cmd)
+            ("bounded_verification_exec", "C:\\Users\\example-user\\Projects\\fixture-repo", cmd)
             for cmd in variants
         }
         # Every single variant must produce a strictly unique identity
@@ -223,7 +223,7 @@ class TestPhase11ExactIdentityAdversarial(unittest.TestCase):
         client = SyntheticTurnClient()
         runner = StreamingTurnRunner(client, live=False)
         runner.current_permissions = ":read-only"
-        runner.current_cwd = Path("C:/Projects/repo")
+        runner.current_cwd = Path("C:/Users/example-user/Projects/fixture-repo")
 
         result = TurnRunResult(
             thread_id="th-id-1",
@@ -232,7 +232,7 @@ class TestPhase11ExactIdentityAdversarial(unittest.TestCase):
         )
 
         # Decline npm test
-        id_1 = ("bounded_verification_exec", "C:/Projects/repo", "npm test")
+        id_1 = ("bounded_verification_exec", "C:/Users/example-user/Projects/fixture-repo", "npm test")
         result.approval_state.declined_identities.add(id_1)
 
         # Different variant arrives
@@ -245,7 +245,7 @@ class TestPhase11ExactIdentityAdversarial(unittest.TestCase):
                     "id": "cmd-var-1",
                     "type": "commandExecution",
                     "command": "npm test -- --watch",
-                    "cwd": "C:/Projects/repo",
+                    "cwd": "C:/Users/example-user/Projects/fixture-repo",
                     "exitCode": 1,
                     "error": "EPERM: operation not permitted",
                 },
@@ -255,7 +255,7 @@ class TestPhase11ExactIdentityAdversarial(unittest.TestCase):
         # In non-interactive mode, it will prompt (and default to decline), but was NOT auto-declined as identical
         runner._handle_notification(result, notif)
         self.assertEqual(result.auto_decline_count, 0)
-        id_2 = ("bounded_verification_exec", "C:/Projects/repo", "npm test -- --watch")
+        id_2 = ("bounded_verification_exec", "C:/Users/example-user/Projects/fixture-repo", "npm test -- --watch")
         self.assertIn(id_2, result.approval_state.declined_identities)
 
 

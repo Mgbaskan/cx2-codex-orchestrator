@@ -48,7 +48,7 @@ class TestTaskShapeRouting(unittest.TestCase):
             },
         }
         self.dummy_repo = {
-            "root": Path("C:/Projects/docker_projects/hibrit"),
+            "root": Path("C:/Users/example-user/Projects/sample-project"),
             "git": True,
             "tracked_files": 450,
             "tracked_files_bucket": "large",
@@ -63,10 +63,10 @@ class TestTaskShapeRouting(unittest.TestCase):
         self.temp_dir_obj.cleanup()
 
     # -------------------------------------------------------------
-    # 1. HIBRIT Short vs Full Invariant (Sections 15 & 16)
+    # 1. Sample-project Short vs Full Invariant (Sections 15 & 16)
     # -------------------------------------------------------------
 
-    def test_01_hibrit_short_under_route_regression_fixed(self) -> None:
+    def test_01_sample_project_short_under_route_regression_fixed(self) -> None:
         """
         Critical regression test from Faz 1:
         'Mobil, backend ve web katmanlarındaki P0-01/P0-02 maddelerini plana göre
@@ -89,13 +89,13 @@ class TestTaskShapeRouting(unittest.TestCase):
         self.assertIn("task:plan-reconcile", res["risk_signals"]["task_shape"])
         self.assertIn("task:verification-matrix", res["risk_signals"]["task_shape"])
 
-    def test_02_hibrit_full_fixture_route(self) -> None:
+    def test_02_sample_project_full_fixture_route(self) -> None:
         """
-        Full 200+ line HIBRIT specification fixture.
+        Full 200+ line sample-project specification fixture.
         Must classify as deep / high / workspace-write / gpt-5.6-sol.
         """
-        hibrit_lines = [
-            "# HIBRIT MONOREPO ARCHITECTURE AUDIT AND REFACTOR PLAN",
+        sample_lines = [
+            "# SAMPLE-PROJECT MONOREPO ARCHITECTURE AUDIT AND REFACTOR PLAN",
             "Geliştirme planını incele ve P0-01 / P0-02 gap analizini gerçekleştir.",
             "",
             "## 1. Backend API Refactoring",
@@ -113,8 +113,8 @@ class TestTaskShapeRouting(unittest.TestCase):
             "Web: npm run lint, npm run type-check, npm run build",
         ]
         for i in range(1, 200):
-            hibrit_lines.append(f"Spec Item {i:03d}: Surface module {i} contract and test requirement (Türkçe: ğüşıöç).")
-        full_text = "\n".join(hibrit_lines)
+            sample_lines.append(f"Spec Item {i:03d}: Surface module {i} contract and test requirement (Türkçe: ğüşıöç).")
+        full_text = "\n".join(sample_lines)
 
         res = cx.classify(full_text, self.dummy_repo, self.policy)
         model = resolve_model(res, self.policy)
@@ -125,20 +125,20 @@ class TestTaskShapeRouting(unittest.TestCase):
         self.assertTrue(res["mutating"])
         self.assertEqual(model, "gpt-5.6-sol")
 
-    def test_03_hibrit_short_and_full_invariant(self) -> None:
+    def test_03_sample_project_short_and_full_invariant(self) -> None:
         """
-        Invariant: Short and Full HIBRIT tasks produce identical tier, reasoning, sandbox, and model.
+        Invariant: Short and full sample-project tasks produce identical tier, reasoning, sandbox, and model.
         """
         short_prompt = (
             "Mobil, backend ve web katmanlarındaki P0-01/P0-02 maddelerini plana göre "
             "tamamla; test, lint ve build kapılarını çalıştır."
         )
-        hibrit_lines = [
-            "# HIBRIT MONOREPO PLAN",
+        sample_lines = [
+            "# SAMPLE-PROJECT MONOREPO PLAN",
             "Mobil, backend ve web katmanlarındaki P0-01/P0-02 maddelerini plana göre tamamla;",
             "test, lint ve build kapılarını çalıştır.",
         ] + [f"Line {i}: Detail" for i in range(100)]
-        full_prompt = "\n".join(hibrit_lines)
+        full_prompt = "\n".join(sample_lines)
 
         res_short = cx.classify(short_prompt, self.dummy_repo, self.policy)
         res_full = cx.classify(full_prompt, self.dummy_repo, self.policy)
@@ -343,9 +343,9 @@ class TestTaskShapeRouting(unittest.TestCase):
         self.assertEqual(cx.choose_model("deep", VISIBLE_MODELS, self.policy), "gpt-5.6-sol")
 
     def test_20_route_file_canary_integration(self) -> None:
-        """CLI --route-file with HIBRIT short and full fixtures produces deep / high / Sol."""
+        """CLI --route-file with sample-project short and full fixtures produces deep / high / Sol."""
         # A. Short fixture
-        short_file = self.temp_dir / "short_hibrit.md"
+        short_file = self.temp_dir / "short_sample_project.md"
         short_text = (
             "Mobil, backend ve web katmanlarındaki P0-01/P0-02 maddelerini plana göre "
             "tamamla; test, lint ve build kapılarını çalıştır."
@@ -360,9 +360,9 @@ class TestTaskShapeRouting(unittest.TestCase):
         self.assertEqual(res_short["sandbox"], "workspace-write")
 
         # B. Full fixture
-        full_file = self.temp_dir / "full_hibrit.md"
+        full_file = self.temp_dir / "full_sample_project.md"
         full_lines = [
-            "# HIBRIT ARCHITECTURE PLAN",
+            "# SAMPLE-PROJECT ARCHITECTURE PLAN",
             "Mobil, backend ve web katmanlarındaki P0-01/P0-02 maddelerini plana göre tamamla;",
             "test, lint ve build kapılarını çalıştır.",
         ] + [f"Item {i}: Contract spec" for i in range(150)]
@@ -385,7 +385,7 @@ class TestTaskShapeRouting(unittest.TestCase):
             ("Tüm projeyi güvenlik açıkları için baştan sona incele, değiştirme yapma.", "deep", "high", "read-only", "gpt-5.6-sol", True),
             # 4. Auth race condition
             ("Backend auth modülündeki race condition'ı düzelt ve testleri çalıştır.", "deep", "high", "workspace-write", "gpt-5.6-sol", False),
-            # 5. HIBRIT short
+            # 5. Sample-project short
             ("Mobil, backend ve web katmanlarındaki P0-01/P0-02 maddelerini plana göre tamamla; test, lint ve build kapılarını çalıştır.", "deep", "high", "workspace-write", "gpt-5.6-sol", False),
             # 6. Multi-surface read-only explanation
             ("Backend ve web mimarisini açıkla. Hiçbir şeyi değiştirme.", "standard", "medium", "read-only", "gpt-5.6-terra", False),
@@ -407,7 +407,7 @@ class TestTaskShapeRouting(unittest.TestCase):
             ("Backend, mobile ve web katmanlarını güncelle; tüm test, lint, type-check ve build kapılarını çalıştır.", "deep", "high", "workspace-write", "gpt-5.6-sol", False),
             # 15. 20 KB README rewrite (NOT deep)
             ("Aşağıdaki 20 KB README metnini daha anlaşılır biçimde yeniden yaz:\n" + ("Bu doküman metnidir.\n" * 400), None, None, "workspace-write", None, False),
-            # 16. HIBRIT exact full prompt
+            # 16. Sample-project exact full prompt
             ("Mobil, backend ve web katmanlarındaki P0-01/P0-02 maddelerini plana göre tamamla; test, lint ve build kapılarını çalıştır.\n" + ("Spec detail\n" * 100), "deep", "high", "workspace-write", "gpt-5.6-sol", False),
         ]
 

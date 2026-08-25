@@ -132,7 +132,7 @@ class TestStreamedCommandClassification(unittest.TestCase):
             )
 
         # Stream late EPERM error
-        late_err = "EPERM: operation not permitted, mkdir 'C:\\Users\\muugo\\.codex-agent-cache\\tmp\\jest'\n"
+        late_err = "EPERM: operation not permitted, mkdir 'C:\\Users\\example-user\\.codex-agent-cache\\tmp\\jest'\n"
         runner._handle_notification(
             result,
             {"method": "item/commandExecution/outputDelta", "params": {"itemId": item_id, "delta": late_err}},
@@ -183,7 +183,7 @@ class TestStreamedCommandClassification(unittest.TestCase):
         for _ in range(80):  # 80 * 64 KiB = 5120 KiB = 5 MB
             accum.push(chunk)
 
-        accum.push("\nEPERM: operation not permitted, mkdir 'C:\\Users\\muugo\\.codex-agent-cache\\tmp\\jest'\n")
+        accum.push("\nEPERM: operation not permitted, mkdir 'C:\\Users\\example-user\\.codex-agent-cache\\tmp\\jest'\n")
 
         diag = accum.get_diagnostic_text()
         self.assertIn("EPERM: operation not permitted", diag)
@@ -311,7 +311,7 @@ class TestStreamedCommandClassification(unittest.TestCase):
         for i in range(15000):
             accum.push(f"{turkish_pattern}{i}\n")
 
-        accum.push("SON_HATA: EPERM: operation not permitted, mkdir 'C:\\Users\\muugo\\.codex-agent-cache\\tmp\\jest'\n")
+        accum.push("SON_HATA: EPERM: operation not permitted, mkdir 'C:\\Users\\example-user\\.codex-agent-cache\\tmp\\jest'\n")
 
         text = accum.get_diagnostic_text()
         self.assertIn("Türkçe doğrulama", text)

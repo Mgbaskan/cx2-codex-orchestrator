@@ -35,7 +35,7 @@ from session_adapter import (
 
 
 REPO_ROOT = Path(
-    r"C:\Projects\docker_projects\hibrit_app"
+    r"C:\Users\example-user\Projects\sample-app"
 ).resolve()
 
 PRODUCTION_DB = (
@@ -148,7 +148,7 @@ def main() -> int:
         "git"
     ):
         raise RuntimeError(
-            "HIBRIT git repo olarak algilanmadi."
+            "Sample app git repo olarak algilanmadi."
         )
 
     db = sqlite3.connect(
@@ -162,7 +162,7 @@ def main() -> int:
         # Force NEW thread in the isolated DB.
         #
         # This prevents the canary from touching/resuming the
-        # user's currently stored production HIBRIT session.
+        # user's currently stored production sample-app session.
         # -----------------------------------------------------
 
         production_cx.clear_repo_session(

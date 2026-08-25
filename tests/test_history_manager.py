@@ -19,7 +19,7 @@ class TestHistoryManager(unittest.TestCase):
 
     def test_print_threads_formatting(self):
         data = [
-            {"id": "019de6f2-0001-7000-8000-000000000001", "name": "Task One", "preview": "Task One", "cwd": r"C:\Projects\app", "status": "completed", "updatedAt": 1700000000.0, "createdAt": 1700000000.0, "source": "cli", "modelProvider": "gpt-5.6-luna"}
+            {"id": "019de6f2-0001-7000-8000-000000000001", "name": "Task One", "preview": "Task One", "cwd": r"C:\Users\example-user\Projects\sample-app", "status": "completed", "updatedAt": 1700000000.0, "createdAt": 1700000000.0, "source": "cli", "modelProvider": "gpt-5.6-luna"}
         ]
         buf = io.StringIO()
         with patch("sys.stdout", buf):

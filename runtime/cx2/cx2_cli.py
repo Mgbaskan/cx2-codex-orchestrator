@@ -77,6 +77,7 @@ from cx2_runtime import (
     CX2RuntimeError,
     EXPECTED_ROUTER_VERSION,
     RUNTIME_VERSION,
+    TurnTimeoutError,
 )
 
 from session_adapter import (
@@ -84,7 +85,7 @@ from session_adapter import (
 )
 
 
-CLI_VERSION = "2.0.11"
+CLI_VERSION = "2.0.12"
 
 
 class CX2CLIError(
@@ -638,16 +639,13 @@ def handle_interactive_command(
         if pasted:
 
             if runtime is not None:
-
-                try:
-                    runtime.execute_prompt(
-                        prompt=pasted,
-                        cwd=cwd,
-                        repo=repo,
-                        db=db,
-                    )
-                except KeyboardInterrupt:
-                    print("\n[cx] Tur durduruldu.")
+                execute_interactive_prompt(
+                    runtime,
+                    prompt=pasted,
+                    cwd=cwd,
+                    repo=repo,
+                    db=db,
+                )
 
         return True, False
 
@@ -855,6 +853,75 @@ def _safe_write_crash_log(
         pass
 
 
+def _timeout_message(exc: TimeoutError) -> str:
+    if isinstance(exc, TurnTimeoutError):
+        if exc.kind == "idle":
+            return (
+                "[cx] Tur ilerleme olmadığı için zaman aşımına uğradı "
+                f"(idle: {exc.configured_idle_timeout:g}s)."
+            )
+        return (
+            "[cx] Tur maksimum çalışma süresine ulaştı "
+            f"(hard: {exc.configured_hard_timeout:g}s)."
+        )
+    return "[cx] Tur zaman aşımına uğradı."
+
+
+def execute_interactive_prompt(
+    runtime: CX2Runtime,
+    *,
+    prompt: str,
+    cwd: Path,
+    repo: dict[str, Any],
+    db: sqlite3.Connection,
+) -> None:
+    """Shared failure boundary for ordinary and /paste interactive turns."""
+    try:
+        runtime.execute_prompt(
+            prompt=prompt,
+            cwd=cwd,
+            repo=repo,
+            db=db,
+        )
+    except KeyboardInterrupt:
+        print("\n[cx] Tur durduruldu.")
+    except TimeoutError as exc:
+        print("\n" + _timeout_message(exc))
+        try:
+            runtime.reset_memory_session()
+        except Exception:
+            pass
+    except AppServerProtocolError as exc:
+        _safe_write_crash_log(exc)
+        print(
+            "\n[cx] Codex App Server bağlantısı koptu; "
+            "sonraki istekte yeniden başlatılacak."
+        )
+        try:
+            runtime.close()
+        except Exception:
+            pass
+    except ValueError as exc:
+        print(f"\n[cx] Geçersiz parametre: {exc}")
+    except (CX2RuntimeError, RuntimeError) as exc:
+        _safe_write_crash_log(exc)
+        print(f"\n[cx] Çalışma zamanı hatası: {exc}")
+        try:
+            runtime.close()
+        except Exception:
+            pass
+    except Exception as exc:
+        _safe_write_crash_log(exc)
+        print(
+            f"\n[cx] Beklenmeyen hata oluştu: {exc}. "
+            "Ayrıntılar hata günlüğüne yazıldı."
+        )
+        try:
+            runtime.close()
+        except Exception:
+            pass
+
+
 def execute_one_shot(
     prompt: str,
     *,
@@ -899,8 +966,8 @@ def execute_one_shot(
         print("\n[cx] Tur durduruldu.", file=sys.stderr)
         return 130
 
-    except TimeoutError:
-        print("[cx] Tur zaman aşımına uğradı.", file=sys.stderr)
+    except TimeoutError as exc:
+        print(_timeout_message(exc), file=sys.stderr)
         return 1
 
     except AppServerProtocolError as exc:
@@ -1027,54 +1094,13 @@ def interactive_loop(
             if handled:
                 continue
 
-            try:
-                runtime.execute_prompt(
-                    prompt=prompt,
-                    cwd=cwd,
-                    repo=repo,
-                    db=db,
-                )
-            except KeyboardInterrupt:
-                print("\n[cx] Tur durduruldu.")
-            except TimeoutError:
-                print("\n[cx] Tur zaman aşımına uğradı.")
-                try:
-                    runtime.reset_memory_session()
-                except Exception:
-                    pass
-            except AppServerProtocolError as exc:
-                _safe_write_crash_log(exc)
-                print(
-                    "\n[cx] Codex App Server bağlantısı koptu; "
-                    "sonraki istekte yeniden başlatılacak."
-                )
-                try:
-                    runtime.close()
-                except Exception:
-                    pass
-            except ValueError as exc:
-                print(
-                    f"\n[cx] Geçersiz parametre: {exc}"
-                )
-            except (CX2RuntimeError, RuntimeError) as exc:
-                _safe_write_crash_log(exc)
-                print(
-                    f"\n[cx] Çalışma zamanı hatası: {exc}"
-                )
-                try:
-                    runtime.close()
-                except Exception:
-                    pass
-            except Exception as exc:
-                _safe_write_crash_log(exc)
-                print(
-                    f"\n[cx] Beklenmeyen hata oluştu: {exc}. "
-                    "Ayrıntılar hata günlüğüne yazıldı."
-                )
-                try:
-                    runtime.close()
-                except Exception:
-                    pass
+            execute_interactive_prompt(
+                runtime,
+                prompt=prompt,
+                cwd=cwd,
+                repo=repo,
+                db=db,
+            )
 
     finally:
 

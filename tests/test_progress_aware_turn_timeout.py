@@ -130,13 +130,13 @@ class TestProgressAwareTurnTimeout(unittest.TestCase):
 
     def test_active_progress_extends_idle_past_old_absolute_limit(self) -> None:
         schedule = [
-            (4.0, event("item/agentMessage/delta", {"delta": "a"})),
-            (8.0, event("item/agentMessage/delta", {"delta": "b"})),
-            (12.0, event("item/commandExecution/outputDelta", {"itemId": "c", "delta": "ok"})),
-            completed(16.0),
+            (200.0, event("item/agentMessage/delta", {"delta": "a"})),
+            (400.0, event("item/agentMessage/delta", {"delta": "b"})),
+            (600.0, event("item/commandExecution/outputDelta", {"itemId": "c", "delta": "ok"})),
+            completed(700.0),
         ]
         _runner, client, _result, final = self.run_schedule(
-            schedule, idle=5.0, hard=20.0
+            schedule, idle=300.0, hard=3600.0
         )
         self.assertEqual(final.status, "completed")
         self.assertEqual(client.interrupt_count, 0)

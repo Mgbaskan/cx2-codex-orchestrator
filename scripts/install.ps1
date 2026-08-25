@@ -187,45 +187,48 @@ try {
     }
 
     # 4.3 Copy managed source files
-    Copy-Item $srcCx (Join-Path $resolvedTarget "src\cx.py") -Force
-    if (-not $backedUpFiles.ContainsKey("src\cx.py")) {
-        $createdFiles.Add((Join-Path $resolvedTarget "src\cx.py"))
+    $srcDest = Join-Path $resolvedTarget "src\cx.py"
+    if (-not $backedUpFiles.ContainsKey("src\cx.py") -and -not $createdFiles.Contains($srcDest)) {
+        $createdFiles.Add($srcDest)
     }
+    Copy-Item $srcCx $srcDest -Force
 
     foreach ($rf in $runtimeFiles) {
         $dest = Join-Path $resolvedTarget ("runtime\cx2\" + $rf.Name)
-        Copy-Item $rf.FullName $dest -Force
         $rel = "runtime\cx2\" + $rf.Name
-        if (-not $backedUpFiles.ContainsKey($rel)) {
+        if (-not $backedUpFiles.ContainsKey($rel) -and -not $createdFiles.Contains($dest)) {
             $createdFiles.Add($dest)
         }
+        Copy-Item $rf.FullName $dest -Force
     }
 
     # 4.4 Policy handling
     if (-not $policyExisted) {
+        if (-not $createdFiles.Contains($targetPolicy)) {
+            $createdFiles.Add($targetPolicy)
+        }
         Copy-Item $policyExample $targetPolicy -Force
-        $createdFiles.Add($targetPolicy)
         Write-Host "[install] Created default policy.json" -ForegroundColor Green
     } else {
         Write-Host "[install] Preserved existing policy.json" -ForegroundColor Green
     }
 
     # 4.5 Build launcher
+    if (-not $backedUpFiles.ContainsKey("bin\cx.exe") -and -not $createdFiles.Contains($targetExe)) {
+        $createdFiles.Add($targetExe)
+    }
     Write-Host "[install] Compiling native launcher..." -ForegroundColor Cyan
     & powershell -NoProfile -ExecutionPolicy Bypass -File $buildLauncherScript -OutputPath $targetExe
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path $targetExe)) {
         throw "Failed to compile launcher executable at: $targetExe"
     }
-    if (-not $backedUpFiles.ContainsKey("bin\cx.exe")) {
-        $createdFiles.Add($targetExe)
-    }
 
     # 4.6 Create batch wrapper fallback
-    $cmdContent = "@echo off`r`n`"%~dp0..\runtime\venv\Scripts\python.exe`" `"%~dp0..\runtime\cx2\cx2_cli.py`" %*"
-    Set-Content -Path $targetCmd -Value $cmdContent -Encoding ASCII
-    if (-not $backedUpFiles.ContainsKey("bin\cx.cmd")) {
+    if (-not $backedUpFiles.ContainsKey("bin\cx.cmd") -and -not $createdFiles.Contains($targetCmd)) {
         $createdFiles.Add($targetCmd)
     }
+    $cmdContent = "@echo off`r`n`"%~dp0..\runtime\venv\Scripts\python.exe`" `"%~dp0..\runtime\cx2\cx2_cli.py`" %*"
+    Set-Content -Path $targetCmd -Value $cmdContent -Encoding ASCII
 
     # ==============================================================================
     # PHASE 5: VERIFY (Doctor self-check)
@@ -277,16 +280,26 @@ try {
     Write-Host "`n[error] Installation failed: $origError" -ForegroundColor Red
     Write-Host "[rollback] Initiating rollback of managed changes..." -ForegroundColor Yellow
 
+    $rollbackErrors = [System.Collections.Generic.List[string]]::new()
+
     # 7.1 Restore previous virtual environment
     if ($venvBackedUp -and (Test-Path $venvBackupDir)) {
         Write-Host "[rollback] Restoring previous virtual environment..." -ForegroundColor Yellow
-        if (Test-Path $venvDir) {
-            Remove-Item -Path $venvDir -Recurse -Force -ErrorAction SilentlyContinue
+        try {
+            if (Test-Path $venvDir) {
+                Remove-Item -Path $venvDir -Recurse -Force -ErrorAction Stop
+            }
+            Move-Item -Path $venvBackupDir -Destination $venvDir -Force -ErrorAction Stop
+        } catch {
+            $rollbackErrors.Add("Failed to restore virtual environment from '$venvBackupDir' to '$venvDir': $($_.Exception.Message)")
         }
-        Move-Item -Path $venvBackupDir -Destination $venvDir -Force -ErrorAction SilentlyContinue
-    } elseif (Test-Path $venvDir) {
+    } elseif (-not $targetDirExisted -and (Test-Path $venvDir)) {
         # If fresh install created incomplete venv, remove it
-        Remove-Item -Path $venvDir -Recurse -Force -ErrorAction SilentlyContinue
+        try {
+            Remove-Item -Path $venvDir -Recurse -Force -ErrorAction Stop
+        } catch {
+            $rollbackErrors.Add("Failed to remove incomplete virtual environment at '$venvDir': $($_.Exception.Message)")
+        }
     }
 
     # 7.2 Restore backed up managed files
@@ -294,22 +307,48 @@ try {
         $backupPath = $backedUpFiles[$relPath]
         $destPath = Join-Path $resolvedTarget $relPath
         if (Test-Path $backupPath) {
-            Copy-Item -Path $backupPath -Destination $destPath -Force -ErrorAction SilentlyContinue
+            try {
+                Copy-Item -Path $backupPath -Destination $destPath -Force -ErrorAction Stop
+            } catch {
+                $rollbackErrors.Add("Failed to restore backed up file '$relPath': $($_.Exception.Message)")
+            }
         }
     }
 
     # 7.3 Remove files created fresh during this failed installation
     foreach ($createdPath in $createdFiles) {
         if (Test-Path $createdPath) {
-            Remove-Item -Path $createdPath -Force -ErrorAction SilentlyContinue
+            try {
+                Remove-Item -Path $createdPath -Force -ErrorAction Stop
+            } catch {
+                $rollbackErrors.Add("Failed to remove newly created file '$createdPath': $($_.Exception.Message)")
+            }
         }
     }
 
     # 7.4 Clean up rollback temp directory
     if (Test-Path $rollbackWorkspace) {
-        Remove-Item -Path $rollbackWorkspace -Recurse -Force -ErrorAction SilentlyContinue
+        try {
+            Remove-Item -Path $rollbackWorkspace -Recurse -Force -ErrorAction Stop
+        } catch {
+            Write-Host "[rollback] Warning: Failed to clean up rollback workspace at '$rollbackWorkspace': $($_.Exception.Message)" -ForegroundColor Yellow
+        }
     }
 
-    Write-Host "[rollback] Rollback complete. User state was preserved." -ForegroundColor Yellow
-    throw $origError
+    # 7.5 Status reporting and diagnostic preservation
+    if ($rollbackErrors.Count -gt 0) {
+        Write-Host ""
+        Write-Host "[rollback] ROLLBACK INCOMPLETE - Some managed resources could not be restored:" -ForegroundColor Red
+        foreach ($rErr in $rollbackErrors) {
+            Write-Host "  - $rErr" -ForegroundColor Red
+        }
+        $errCount = $rollbackErrors.Count
+        $nl = [Environment]::NewLine
+        $errList = ($rollbackErrors -join $nl)
+        $combinedMsg = "Installation failed: $origError$nl$nl" + "ROLLBACK INCOMPLETE ($errCount errors):$nl$errList"
+        throw $combinedMsg
+    } else {
+        Write-Host "[rollback] Rollback complete. User state was preserved." -ForegroundColor Yellow
+        throw $origError
+    }
 }

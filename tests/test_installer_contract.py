@@ -67,6 +67,39 @@ class TestInstallerContract(unittest.TestCase):
     def test_path_update_is_idempotent(self):
         self.assertIn("-notcontains $binDir", self.script_content)
 
+    def test_rollback_explicit_error_collection(self):
+        # Must instantiate rollback error collection rather than relying on global error suppression
+        self.assertIn("$rollbackErrors = [System.Collections.Generic.List[string]]::new()", self.script_content)
+        self.assertIn("$rollbackErrors.Count -gt 0", self.script_content)
+
+    def test_rollback_per_operation_error_handling(self):
+        # Must use per-operation try/catch blocks with -ErrorAction Stop so failures do not abort outer rollback
+        self.assertIn('$rollbackErrors.Add("Failed to restore backed up file', self.script_content)
+        self.assertIn('$rollbackErrors.Add("Failed to remove newly created file', self.script_content)
+        self.assertIn('$rollbackErrors.Add("Failed to restore virtual environment', self.script_content)
+
+    def test_rollback_status_reporting_contract(self):
+        # Must clearly distinguish between ROLLBACK INCOMPLETE and Rollback complete
+        self.assertIn("ROLLBACK INCOMPLETE", self.script_content)
+        self.assertIn("[rollback] Rollback complete. User state was preserved.", self.script_content)
+
+    def test_rollback_preserves_original_diagnostic(self):
+        # Original error must be preserved in both complete and incomplete rollback paths
+        self.assertIn("throw $origError", self.script_content)
+        self.assertIn("Installation failed: $origError", self.script_content)
+
+    def test_created_files_tracks_all_managed_additions(self):
+        # Must pre-register created files including src/cx.py, runtime files, policy, launcher, and cmd
+        self.assertIn('$createdFiles.Add($srcDest)', self.script_content)
+        self.assertIn('$createdFiles.Add($dest)', self.script_content)
+        self.assertIn('$createdFiles.Add($targetPolicy)', self.script_content)
+        self.assertIn('$createdFiles.Add($targetExe)', self.script_content)
+        self.assertIn('$createdFiles.Add($targetCmd)', self.script_content)
+
+    def test_rollback_untouched_venv_preservation(self):
+        # Must not delete existing venv on failure if venv was not backed up
+        self.assertIn("elseif (-not $targetDirExisted -and (Test-Path $venvDir))", self.script_content)
+
 
 if __name__ == "__main__":
     unittest.main()

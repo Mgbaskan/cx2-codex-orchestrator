@@ -1,15 +1,36 @@
 from __future__ import annotations
 
+import atexit
 import importlib.abc
 import importlib.machinery
+import os
 from pathlib import Path
+import shutil
 import sys
+import tempfile
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SRC_DIR = REPO_ROOT / "src"
 RUNTIME_DIR = REPO_ROOT / "runtime" / "cx2"
 TESTS_DIR = REPO_ROOT / "tests"
+
+
+# Development modules otherwise resolve Path.home()/.cx and can overwrite the
+# installed runtime's mutable logs during tests. Give the entire test process a
+# disposable external home before any repository runtime module is imported.
+_temp_parent = Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "Temp"
+_temp_parent.mkdir(parents=True, exist_ok=True)
+TEST_USER_HOME = Path(
+    tempfile.mkdtemp(prefix="cx2-test-home-", dir=_temp_parent)
+).resolve()
+os.environ["USERPROFILE"] = str(TEST_USER_HOME)
+os.environ["HOME"] = str(TEST_USER_HOME)
+
+
+@atexit.register
+def _cleanup_test_user_home() -> None:
+    shutil.rmtree(TEST_USER_HOME, ignore_errors=True)
 
 
 class _RepoMetaPathFinder(importlib.abc.MetaPathFinder):

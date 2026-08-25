@@ -14,7 +14,12 @@ import _bootstrap
 
 from cx2_runtime import (
     resolve_turn_timeout,
+    resolve_turn_timeouts,
+    DEFAULT_TURN_HARD_TIMEOUTS,
+    DEFAULT_TURN_IDLE_TIMEOUTS,
     DEFAULT_TURN_TIMEOUTS,
+    MIN_TURN_HARD_TIMEOUT_SEC,
+    MAX_TURN_HARD_TIMEOUT_SEC,
     MIN_TURN_TIMEOUT_SEC,
     MAX_TURN_TIMEOUT_SEC,
 )
@@ -70,6 +75,66 @@ class TestTurnTimeout(unittest.TestCase):
         self.assertEqual(resolve_turn_timeout({"tier": "deep"}), 600.0)
         self.assertEqual(resolve_turn_timeout({"tier": "standard"}), 450.0)
         self.assertEqual(resolve_turn_timeout({"tier": "routine"}), 300.0)
+
+        self.assertEqual(
+            resolve_turn_timeouts("routine").hard_timeout_sec,
+            DEFAULT_TURN_HARD_TIMEOUTS["routine"],
+        )
+        self.assertEqual(
+            resolve_turn_timeouts("deep").idle_timeout_sec,
+            DEFAULT_TURN_IDLE_TIMEOUTS["deep"],
+        )
+
+    def test_new_policy_precedence_legacy_fallback_and_invariant(self):
+        policy = {
+            "execution": {
+                "turn_timeout_sec": {"deep": 700},
+                "turn_idle_timeout_sec": {"deep": 800},
+                "turn_hard_timeout_sec": {"deep": 1200},
+            }
+        }
+        limits = resolve_turn_timeouts("deep", policy)
+        self.assertEqual(limits.idle_timeout_sec, 800.0)
+        self.assertEqual(limits.hard_timeout_sec, 1200.0)
+
+        legacy_only = {
+            "execution": {"turn_timeout_sec": {"deep": 700}}
+        }
+        limits = resolve_turn_timeouts("deep", legacy_only)
+        self.assertEqual(limits.idle_timeout_sec, 700.0)
+        self.assertEqual(limits.hard_timeout_sec, 3600.0)
+
+        normalized = {
+            "execution": {
+                "turn_idle_timeout_sec": {"deep": 900},
+                "turn_hard_timeout_sec": {"deep": 60},
+            }
+        }
+        limits = resolve_turn_timeouts("deep", normalized)
+        self.assertEqual(limits.idle_timeout_sec, 900.0)
+        self.assertEqual(limits.hard_timeout_sec, 900.0)
+
+    def test_hard_timeout_validation_bounds(self):
+        too_low = {
+            "execution": {
+                "turn_idle_timeout_sec": {"routine": 30},
+                "turn_hard_timeout_sec": {"routine": -1},
+            }
+        }
+        too_high = {"execution": {"turn_hard_timeout_sec": {"routine": 999999}}}
+        invalid = {"execution": {"turn_hard_timeout_sec": {"routine": True}}}
+        self.assertEqual(
+            resolve_turn_timeouts("routine", too_low).hard_timeout_sec,
+            MIN_TURN_HARD_TIMEOUT_SEC,
+        )
+        self.assertEqual(
+            resolve_turn_timeouts("routine", too_high).hard_timeout_sec,
+            MAX_TURN_HARD_TIMEOUT_SEC,
+        )
+        self.assertEqual(
+            resolve_turn_timeouts("routine", invalid).hard_timeout_sec,
+            DEFAULT_TURN_HARD_TIMEOUTS["routine"],
+        )
 
     def test_escalation_attempt_tier(self):
         """E: Standard task escalated to deep attempt must resolve to deep timeout (600s)."""

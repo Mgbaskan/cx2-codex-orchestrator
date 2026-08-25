@@ -17,6 +17,22 @@ sys.path.insert(0, _bootstrap.RUNTIME_DIR)
 import cx2_cli
 from client import AppServerProtocolError
 from cx2_runtime import CX2ExecutionResult, CX2Runtime, CX2RuntimeError
+from turn_runner import TurnRunResult, TurnTimeoutError
+
+
+def typed_timeout(kind: str) -> TurnTimeoutError:
+    result = TurnRunResult(thread_id="thread-1", turn_id="turn-1")
+    return TurnTimeoutError(
+        kind=kind,
+        turn_id="turn-1",
+        elapsed_seconds=600.0,
+        idle_seconds=600.0,
+        configured_idle_timeout=600.0,
+        configured_hard_timeout=3600.0,
+        interrupt_requested=True,
+        last_meaningful_activity_category="item/completed",
+        result=result,
+    )
 
 
 class FakeRuntime:
@@ -114,6 +130,43 @@ class TestInteractiveFailureBoundary(unittest.TestCase):
         self.assertIn("zaman aşımı", output.lower())
         self.assertNotIn("Traceback (most recent call last)", output)
         self.assertEqual(len(fake_runtime.calls), 1)
+
+    def test_typed_idle_timeout_message_and_loop_survival(self) -> None:
+        fake_runtime = FakeRuntime(side_effects=[typed_timeout("idle")])
+        stdout_capture = io.StringIO()
+        with patch("builtins.input", side_effect=["prompt", "/exit"]), \
+             patch("sys.stdout", stdout_capture), \
+             patch("cx2_cli.CX2Runtime", return_value=fake_runtime):
+            exit_code = cx2_cli.interactive_loop(
+                cwd=self.cwd,
+                repo=self.repo,
+                db=self.db,
+            )
+        output = stdout_capture.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertIn("ilerleme olmadığı", output)
+        self.assertIn("idle: 600s", output)
+        self.assertNotIn("Traceback (most recent call last)", output)
+        self.assertTrue(fake_runtime.reset_memory_called)
+
+    def test_paste_typed_timeout_uses_same_boundary_and_loop_survives(self) -> None:
+        fake_runtime = FakeRuntime(side_effects=[typed_timeout("idle")])
+        stdout_capture = io.StringIO()
+        with patch("builtins.input", side_effect=["/paste", "/exit"]), \
+             patch("cx2_cli.capture_multiline_paste", return_value="line one\nline two"), \
+             patch("sys.stdout", stdout_capture), \
+             patch("cx2_cli.CX2Runtime", return_value=fake_runtime):
+            exit_code = cx2_cli.interactive_loop(
+                cwd=self.cwd,
+                repo=self.repo,
+                db=self.db,
+            )
+        output = stdout_capture.getvalue()
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(fake_runtime.calls[0]["prompt"], "line one\nline two")
+        self.assertIn("idle: 600s", output)
+        self.assertNotIn("Traceback (most recent call last)", output)
+        self.assertTrue(fake_runtime.reset_memory_called)
 
     # -------------------------------------------------------------
     # B. Next prompt after TimeoutError
@@ -369,6 +422,23 @@ class TestInteractiveFailureBoundary(unittest.TestCase):
         err_output = stderr_capture.getvalue()
         self.assertIn("zaman aşımı", err_output.lower())
         self.assertNotIn("Traceback (most recent call last)", err_output)
+
+    def test_one_shot_typed_hard_timeout_is_clean(self) -> None:
+        fake_runtime = FakeRuntime(side_effects=[typed_timeout("hard")])
+        stderr_capture = io.StringIO()
+        with patch("sys.stderr", stderr_capture), \
+             patch("cx2_cli.CX2Runtime", return_value=fake_runtime):
+            exit_code = cx2_cli.execute_one_shot(
+                "one shot prompt",
+                cwd=self.cwd,
+                repo=self.repo,
+                db=self.db,
+            )
+        self.assertEqual(exit_code, 1)
+        output = stderr_capture.getvalue()
+        self.assertIn("maksimum çalışma süresine", output)
+        self.assertIn("hard: 3600s", output)
+        self.assertNotIn("Traceback (most recent call last)", output)
 
     def test_one_shot_protocol_error_returns_nonzero(self) -> None:
         """One-shot mode with AppServerProtocolError returns 1 and logs crash."""

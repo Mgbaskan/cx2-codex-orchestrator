@@ -6,6 +6,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import uuid
 from typing import Any
 
 from cx_home import resolve_cx_home
@@ -45,8 +46,15 @@ from budget_adapter import (
 from session_adapter import (
     acquire_thread,
     canonical_cwd_key,
+    evaluate_session,
     save_session,
 )
+
+from transcript_store import (
+    StoredResponse,
+    TranscriptStore,
+)
+from file_write_grants import FileWriteGrantRegistry
 
 from telemetry_adapter import (
     context_info_from_turn_result,
@@ -81,6 +89,28 @@ DEFAULT_TURN_IDLE_TIMEOUTS: dict[str, float] = {
     "standard": 450.0,
     "deep": 600.0,
 }
+
+
+def _bounded_trace_text(value: Any, limit: int) -> tuple[str, int, int]:
+    encoded = str(value or "").encode("utf-8", errors="replace")
+    total = len(encoded)
+    retained = encoded[: max(0, int(limit))]
+    while retained:
+        try:
+            text = retained.decode("utf-8")
+            break
+        except UnicodeDecodeError as exc:
+            retained = retained[:exc.start]
+    else:
+        text = ""
+    return text, total, max(0, total - len(retained))
+
+
+def _nonnegative_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
 DEFAULT_TURN_HARD_TIMEOUTS: dict[str, float] = {
     "routine": 1800.0,
     "standard": 2700.0,
@@ -658,15 +688,161 @@ class CX2Runtime:
         self.active_non_git_thread_id: str | None = None
         self.active_non_git_cwd_key: str | None = None
         self.active_non_git_turns: int = 0
+        self._transcript_store: TranscriptStore | None = None
+        self._transcript_store_failed = False
+        self.last_trace: list[dict[str, Any]] = []
+        self.last_trace_dropped_entries = 0
+        self.runtime_instance_nonce = uuid.uuid4().hex
+        self.file_write_grants = FileWriteGrantRegistry(self.runtime_instance_nonce)
+        self._active_runtime_context: tuple[str, str] | None = None
 
+    def _clear_non_git_identity(self) -> None:
+        self.active_non_git_thread_id = None
+        self.active_non_git_cwd_key = None
+        self.active_non_git_turns = 0
 
     def reset_memory_session(
         self,
     ) -> None:
+        self._clear_non_git_identity()
+        self.file_write_grants.clear()
+        self.last_trace = []
+        self.last_trace_dropped_entries = 0
+        self._active_runtime_context = None
 
-        self.active_non_git_thread_id = None
-        self.active_non_git_cwd_key = None
-        self.active_non_git_turns = 0
+    def _activate_runtime_context(self, *, thread_id: str, cwd_key: str) -> None:
+        context = (str(thread_id), str(cwd_key))
+        if self._active_runtime_context is not None and self._active_runtime_context != context:
+            self.file_write_grants.clear()
+            self.last_trace = []
+            self.last_trace_dropped_entries = 0
+        self._active_runtime_context = context
+
+    def _visible_transcript_store(self) -> TranscriptStore | None:
+        if self._transcript_store_failed:
+            return None
+        if self._transcript_store is None:
+            try:
+                self._transcript_store = TranscriptStore(
+                    CX_HOME / "data" / "visible-transcript.sqlite3"
+                )
+            except Exception as exc:
+                self._transcript_store_failed = True
+                print(
+                    f"[cx] Uyarı: Kalıcı transcript devre dışı ({exc}).",
+                    file=sys.stderr,
+                )
+        return self._transcript_store
+
+    def last_visible_response(
+        self,
+        *,
+        cwd: Path,
+        repo: dict[str, Any],
+        db: Any,
+    ) -> StoredResponse | None:
+        store = self._visible_transcript_store()
+        if store is None:
+            return None
+        thread_id: str | None = None
+        try:
+            if repo.get("git"):
+                session_info = evaluate_session(db, repo)
+                session = session_info.get("session")
+                if not isinstance(session, dict) or not session_info.get("reusable", False):
+                    # A missing, stale, or branch-mismatched persisted binding
+                    # is not a safe context for showing another thread's
+                    # response.
+                    return None
+                if not session.get("thread_id"):
+                    return None
+                thread_id = str(session["thread_id"])
+            else:
+                thread_id = self.active_non_git_thread_id
+                if not thread_id:
+                    # Non-git identity is intentionally memory-only. After a
+                    # process restart there is no proof that a workspace row
+                    # belongs to the current interaction context.
+                    return None
+        except Exception:
+            return None
+        return store.get_last(
+            workspace_key=canonical_cwd_key(cwd),
+            thread_id=thread_id,
+        )
+
+    def clear_visible_transcript(
+        self,
+        *,
+        cwd: Path,
+        thread_id: str | None = None,
+    ) -> int:
+        store = self._visible_transcript_store()
+        if store is None:
+            return 0
+        return store.clear_scope(
+            workspace_key=canonical_cwd_key(cwd),
+            thread_id=thread_id,
+        )
+
+    def _capture_trace(self, raw_result: Any | None) -> None:
+        entries: list[dict[str, Any]] = []
+        commands = getattr(raw_result, "command_executions", []) or []
+        if not isinstance(commands, list):
+            commands = []
+        self.last_trace_dropped_entries = max(0, len(commands) - 64)
+        for raw in commands[-64:]:
+            if not isinstance(raw, dict):
+                continue
+            command, command_total, command_dropped = _bounded_trace_text(
+                raw.get("display_command") or raw.get("command") or "", 16 * 1024
+            )
+            cwd, cwd_total, cwd_dropped = _bounded_trace_text(raw.get("cwd") or "", 4096)
+            status, status_total, status_dropped = _bounded_trace_text(
+                raw.get("status") or (
+                    "success" if raw.get("exit_code") in {0, "0"} else "failure"
+                ), 256
+            )
+            classification, classification_total, classification_dropped = _bounded_trace_text(
+                raw.get("classification_text") or "", 64 * 1024
+            )
+            output, observed_output_total, output_projection_dropped = _bounded_trace_text(
+                raw.get("output_snippet") or "", 4096
+            )
+            output_total = max(
+                observed_output_total,
+                _nonnegative_int(raw.get("output_total_bytes")),
+            )
+            output_dropped = max(
+                output_projection_dropped,
+                _nonnegative_int(raw.get("output_dropped_bytes") or raw.get("dropped_bytes")),
+                max(0, output_total - len(output.encode("utf-8"))),
+            )
+            entries.append({
+                "command": command,
+                "command_total_bytes": command_total,
+                "command_dropped_bytes": command_dropped,
+                "cwd": cwd,
+                "cwd_total_bytes": cwd_total,
+                "cwd_dropped_bytes": cwd_dropped,
+                "status": status,
+                "status_total_bytes": status_total,
+                "status_dropped_bytes": status_dropped,
+                "classification": classification,
+                "classification_total_bytes": classification_total,
+                "classification_dropped_bytes": classification_dropped,
+                "exit_code": raw.get("exit_code"),
+                "duration_ms": raw.get("duration_ms"),
+                "sequence": raw.get("sequence"),
+                "output_snippet": output,
+                "output_total_bytes": output_total,
+                "host_execution": bool(raw.get("bounded_host_execution") or raw.get("host_execution")),
+                "output_dropped_bytes": output_dropped,
+                "output_truncated": bool(
+                    raw.get("output_truncated") or raw.get("truncated") or output_dropped
+                ),
+            })
+        self.last_trace = entries
 
 
     def __enter__(
@@ -752,7 +928,12 @@ class CX2Runtime:
             self.client.close()
 
         finally:
-
+            if self._transcript_store is not None:
+                try:
+                    self._transcript_store.close()
+                except Exception:
+                    pass
+                self._transcript_store = None
             self.started = False
             self.initialized = False
             self.reset_memory_session()
@@ -935,7 +1116,9 @@ class CX2Runtime:
         )
 
         if repo.get("git"):
-            self.reset_memory_session()
+            # Git uses its persisted binding; clearing runtime-scoped grants on
+            # every prompt would make accept-for-session a one-turn grant.
+            self._clear_non_git_identity()
             candidate_memory_thread = None
         else:
             if (
@@ -993,6 +1176,14 @@ class CX2Runtime:
             ]
         )
 
+        self._activate_runtime_context(
+            thread_id=thread_id,
+            cwd_key=current_cwd_key,
+        )
+
+        transcript_store = self._visible_transcript_store()
+        transcript_workspace_key = canonical_cwd_key(cwd)
+
         resume_error = acquired.get(
             "resume_error"
         )
@@ -1006,7 +1197,11 @@ class CX2Runtime:
         runner = StreamingTurnRunner(
             self.client,
             live=self.live,
+            file_write_grants=self.file_write_grants,
+            runtime_instance_nonce=self.runtime_instance_nonce,
         )
+        if self.live:
+            _CX2_TERMINAL.compact_tools = True
 
         attempt_input = prompt
 
@@ -1123,6 +1318,9 @@ class CX2Runtime:
                 input_items=input_items,
                 idle_timeout=attempt_timeouts.idle_timeout_sec,
                 hard_timeout=attempt_timeouts.hard_timeout_sec,
+                transcript_store=transcript_store,
+                transcript_workspace_key=transcript_workspace_key,
+                transcript_display_workspace=str(cwd),
             )
 
             attempts_used += 1
@@ -1267,6 +1465,9 @@ class CX2Runtime:
                     approval_policy=approval_policy,
                     idle_timeout=cont_timeouts.idle_timeout_sec,
                     hard_timeout=cont_timeouts.hard_timeout_sec,
+                    transcript_store=transcript_store,
+                    transcript_workspace_key=transcript_workspace_key,
+                    transcript_display_workspace=str(cwd),
                 )
 
                 attempts_used += 1
@@ -1358,6 +1559,8 @@ class CX2Runtime:
         # Production parity:
         # persist after a result exists, not only status=completed.
         if final_result is not None:
+
+            self._capture_trace(final_raw)
 
             if final_raw is not None:
 
@@ -1470,6 +1673,8 @@ __all__ = [
     "RUNTIME_VERSION",
     "TurnTimeoutError",
     "TurnTimeoutLimits",
+    "StoredResponse",
+    "TranscriptStore",
     "developer_instructions_for_route",
     "initialize_params",
     "is_broad_project_audit",

@@ -96,6 +96,20 @@ class TestTerminalUI(unittest.TestCase):
         self.assertEqual(stream.getvalue(), "answer\n")
         self.assertNotIn("\x1b[", stream.getvalue())
 
+    def test_tty_markdown_is_streaming_safe_across_delta_boundaries(self):
+        stream = self.TTYStream()
+        renderer = TerminalRenderer(stream=stream)
+        with patch.dict("os.environ", {"NO_COLOR": "1", "TERM": "xterm"}):
+            renderer.begin_turn()
+            renderer.agent_delta("# Baş")
+            renderer.agent_delta("lık\n- **öğe** `kod`\nunfinished **bold")
+            renderer.turn_completed("completed")
+        output = stream.getvalue()
+        self.assertIn("# Başlık\n", output)
+        self.assertIn("• öğe kod\n", output)
+        self.assertIn("unfinished **bold", output)
+        self.assertNotIn("\x1b[", output)
+
     def test_non_tty_reconciliation_marker_and_authoritative_text_are_visible(self):
         stream = io.StringIO()
         renderer = TerminalRenderer(stream=stream)

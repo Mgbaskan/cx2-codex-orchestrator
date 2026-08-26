@@ -5,15 +5,31 @@ import shutil
 import sys
 import threading
 import time
+from datetime import datetime, timezone
+from dataclasses import dataclass
 from typing import Any
 
 from verification_gate import (
     is_ripgrep_command,
     unwrap_display_command,
 )
+from terminal_markdown import TerminalMarkdownStream, render_markdown
 
 
 CX2_TERMINAL_RENDERER_V1 = True
+MAX_ACTIVITY_ITEMS = 256
+MAX_VISIBLE_DIFF_BYTES = 256 * 1024
+
+
+@dataclass(frozen=True)
+class TerminalCapabilities:
+    tty: bool
+    interactive_input: bool
+    color: bool
+    unicode: bool
+    cursor: bool
+    sticky_status: bool
+
 
 
 class TerminalRenderer:
@@ -36,6 +52,7 @@ class TerminalRenderer:
         *,
         stream: Any | None = None,
         max_command_lines: int = 80,
+        compact_tools: bool = False,
     ) -> None:
 
         self._stream_override = stream
@@ -44,6 +61,7 @@ class TerminalRenderer:
             10,
             int(max_command_lines),
         )
+        self.compact_tools = bool(compact_tools)
 
         self._lock = threading.RLock()
 
@@ -59,6 +77,12 @@ class TerminalRenderer:
         self._response_open: bool = False
         self._response_has_text: bool = False
         self._response_ends_with_newline: bool = True
+        self._status_text: str = ""
+        self._status_visible = False
+        self._status_quota: dict[str, Any] | None = None
+        self._status_context: dict[str, Any] | None = None
+        self._status_route: tuple[str, str, str] | None = None
+        self._markdown_stream = TerminalMarkdownStream()
 
     def begin_turn(self) -> None:
         """Reset every presentation field whose meaning is scoped to one turn."""
@@ -70,6 +94,15 @@ class TerminalRenderer:
         self._response_open = False
         self._response_has_text = False
         self._response_ends_with_newline = True
+        self._markdown_stream = TerminalMarkdownStream()
+
+    def state(self, name: str, detail: str = "") -> None:
+        """Render a semantic lifecycle state without relying on colour."""
+        self.stop_activity()
+        text = f"[cx] {str(name).upper()}"
+        if detail:
+            text += f" · {detail}"
+        self._line(self._bold(text) if self.color_enabled else text)
 
     def _begin_response(self) -> None:
         if self._response_open:
@@ -186,6 +219,8 @@ class TerminalRenderer:
         self,
         text: str = "",
     ) -> None:
+        if self._status_visible:
+            self.suspend_status()
         self._write(
             text + "\n"
         )
@@ -439,7 +474,11 @@ class TerminalRenderer:
         self.stop_activity()
 
         previous = self._last_diff
-        self._last_diff = diff
+        bounded_diff = diff
+        raw_diff_bytes = diff.encode("utf-8")
+        if len(raw_diff_bytes) > MAX_VISIBLE_DIFF_BYTES:
+            bounded_diff = raw_diff_bytes[-MAX_VISIBLE_DIFF_BYTES:].decode("utf-8", errors="replace")
+        self._last_diff = bounded_diff
 
         # turn/diff/updated contains the latest aggregated diff.
         #
@@ -534,6 +573,7 @@ class TerminalRenderer:
     ) -> str:
 
         self.stop_activity()
+        self.suspend_status()
 
         allowed: list[str] = []
 
@@ -575,11 +615,17 @@ class TerminalRenderer:
         # Never manufacture an approval if the protocol offers no
         # deny/cancel-style string decision.
         if not fallback:
+            self.resume_status()
             return ""
 
         # Redirected/non-interactive execution must remain safe and
         # deterministic.
         if not self.can_prompt:
+            print(
+                f"[cx] approval declined (non-interactive): {title}",
+                file=sys.stderr,
+            )
+            self.resume_status()
             return fallback
 
         self._line()
@@ -758,6 +804,7 @@ class TerminalRenderer:
 
             except EOFError:
                 self._line()
+                self.resume_status()
                 return fallback
 
             except KeyboardInterrupt:
@@ -769,13 +816,16 @@ class TerminalRenderer:
                 ):
 
                     if candidate in allowed:
+                        self.resume_status()
                         return candidate
 
+                self.resume_status()
                 return fallback
 
             answer = answer.strip().casefold()
 
             if not answer:
+                self.resume_status()
                 return fallback
 
             selected_key = aliases.get(
@@ -786,6 +836,7 @@ class TerminalRenderer:
                 selected_key
                 and selected_key in choices
             ):
+                self.resume_status()
                 return choices[
                     selected_key
                 ]
@@ -801,6 +852,7 @@ class TerminalRenderer:
     ) -> None:
 
         self.stop_activity()
+        self.suspend_status()
 
         self._begin_response()
 
@@ -808,12 +860,107 @@ class TerminalRenderer:
             self._line()
             self._needs_agent_separator = False
 
-        self._write(
-            delta
+        presented = (
+            self._markdown_stream.feed(delta, color=self.color_enabled)
+            if self.is_tty
+            else delta
         )
+        self._write(presented)
         if delta:
             self._response_has_text = True
             self._response_ends_with_newline = delta.endswith("\n")
+
+    @property
+    def capabilities(self) -> TerminalCapabilities:
+        tty = self.is_tty
+        input_tty = bool(getattr(sys.stdin, "isatty", lambda: False)())
+        term = os.environ.get("TERM", "").casefold()
+        dumb = term == "dumb"
+        unicode_ok = (getattr(self.stream, "encoding", None) or "utf-8").casefold() not in {"ascii", "cp1252"}
+        static_ui = os.environ.get("CX2_STATIC_UI", "").casefold() in {"1", "true", "yes", "on"}
+        cursor = tty and not dumb and not static_ui
+        return TerminalCapabilities(
+            tty=tty,
+            interactive_input=input_tty,
+            color=self.color_enabled,
+            unicode=unicode_ok,
+            cursor=cursor,
+            sticky_status=cursor and input_tty,
+        )
+
+    def set_status_snapshot(
+        self,
+        *,
+        quota: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
+        model: str | None = None,
+        effort: str | None = None,
+        sandbox: str | None = None,
+    ) -> str:
+        if quota is not None:
+            if (
+                quota.get("available") is False
+                and isinstance(self._status_quota, dict)
+                and isinstance(self._status_quota.get("remainingPercent"), (int, float))
+            ):
+                self._status_quota = dict(self._status_quota)
+                self._status_quota["refreshUnavailable"] = True
+            else:
+                self._status_quota = dict(quota)
+        if context is not None:
+            self._status_context = dict(context)
+        if model is not None or effort is not None or sandbox is not None:
+            self._status_route = (
+                str(model or "CX2"),
+                str(effort or "-").upper(),
+                str(sandbox or "-").upper(),
+            )
+        quota = self._status_quota
+        context = self._status_context
+        parts: list[str] = []
+        if self._status_route is not None:
+            parts.extend(self._status_route)
+        if isinstance(quota, dict):
+            remaining = quota.get("remainingPercent")
+            if isinstance(remaining, (int, float)):
+                parts.append(f"quota {remaining:.0f}%")
+            else:
+                parts.append("quota ? · unavailable")
+            state = str(quota.get("state") or "").upper()
+            if state and state not in {"NORMAL", "UNKNOWN", "NONE"}:
+                parts.append(state)
+            captured = quota.get("capturedAt")
+            if isinstance(captured, str):
+                try:
+                    stamp = datetime.fromisoformat(captured.replace("Z", "+00:00"))
+                    if stamp.tzinfo is None:
+                        stamp = stamp.replace(tzinfo=timezone.utc)
+                    age = max(0, int((datetime.now(timezone.utc) - stamp).total_seconds() // 60))
+                    parts.append(f"{age}m old")
+                except (ValueError, TypeError):
+                    pass
+            if quota.get("refreshUnavailable"):
+                parts.append("refresh unavailable")
+        if isinstance(context, dict):
+            percent = context.get("percent")
+            if isinstance(percent, (int, float)):
+                parts.append(f"context {percent:.0f}%")
+        self._status_text = " · ".join(parts)
+        return self._status_text
+
+    def render_status_line(self) -> None:
+        if not self._status_text or not self.capabilities.sticky_status:
+            return
+        self._write("\r\x1b[2K" + self._dim("[cx] " + self._status_text), flush=True)
+        self._status_visible = True
+
+    def suspend_status(self) -> None:
+        if self._status_visible and self.capabilities.cursor:
+            self._write("\r\x1b[2K", flush=True)
+            self._status_visible = False
+
+    def resume_status(self) -> None:
+        self.render_status_line()
 
     def confirm_empty_response(self) -> None:
         """Open the TTY response boundary for an authoritative empty final."""
@@ -841,7 +988,9 @@ class TerminalRenderer:
             self._line("◆ CODEX RESPONSE · RECONCILED")
 
         self._response_open = True
-        self._write(authoritative_text)
+        self._markdown_stream = TerminalMarkdownStream()
+        presented = render_markdown(authoritative_text, color=self.color_enabled) if self.is_tty else authoritative_text
+        self._write(presented)
         self._response_has_text = bool(authoritative_text)
         self._response_ends_with_newline = (
             not authoritative_text or authoritative_text.endswith("\n")
@@ -1111,6 +1260,11 @@ class TerminalRenderer:
 
         self.stop_activity()
 
+        if self.compact_tools and self.is_tty:
+            # Keep the full output in turn_runner's bounded ledger; the normal
+            # terminal view shows only the command badge on completion.
+            return
+
         # Redirected stdout must remain complete and machine/log friendly.
         if not self.is_tty:
             self._write(
@@ -1121,6 +1275,12 @@ class TerminalRenderer:
         key = str(
             item_id
         )
+
+        if key not in self._visible_lines and len(self._visible_lines) >= MAX_ACTIVITY_ITEMS:
+            oldest = next(iter(self._visible_lines), None)
+            if oldest is not None:
+                self._visible_lines.pop(oldest, None)
+                self._folded_items.discard(oldest)
 
         if key in self._folded_items:
             return
@@ -1300,10 +1460,14 @@ class TerminalRenderer:
 
         line_text = f"[cx] {' · '.join(parts)}"
         self._line(self._dim(line_text))
+        self.set_status_snapshot(quota=quota, model=model, effort=effort, sandbox=sandbox)
+        self.render_status_line()
 
         if sandbox_compatibility_mode or (effective_sandbox and sandbox and effective_sandbox != sandbox):
+            self.suspend_status()
             compat_notice = "[cx] Windows sandbox: güvenli read-only uyumluluk modu etkin; yazma işlemleri ayrıca onay isteyebilir."
             self._line(self._dim(compat_notice))
+            self.resume_status()
 
     def render_context_summary(
         self,
@@ -1325,6 +1489,8 @@ class TerminalRenderer:
         self.stop_activity()
         line_text = f"[cx] context {percent:.0f}% · native compaction"
         self._line(self._dim(line_text))
+        self.set_status_snapshot(context=info)
+        self.render_status_line()
 
         warn = 75.0
         if isinstance(policy, dict):
@@ -1333,6 +1499,7 @@ class TerminalRenderer:
             )
 
         if percent >= warn:
+            self.suspend_status()
             self._line(
                 self._yellow(
                     "[cx] Context is getting large; "
@@ -1363,7 +1530,13 @@ class TerminalRenderer:
     ) -> None:
 
         self.stop_activity()
+        self.suspend_status()
         self._needs_agent_separator = False
+
+        if self.is_tty:
+            pending = self._markdown_stream.finish(color=self.color_enabled)
+            if pending:
+                self._write(pending)
 
         if self._response_has_text and not self._response_ends_with_newline:
             self._line()
@@ -1390,6 +1563,7 @@ class TerminalRenderer:
             self._line(self._green("✓ Completed") + suffix)
 
         self._response_open = False
+        self.resume_status()
 
     # ---------------------------------------------------------
     # Diagnostics

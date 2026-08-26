@@ -26,6 +26,44 @@ $ErrorActionPreference = "Stop"
             errors="replace"
         )
 
+    def test_managed_upgrade_preserves_transcript_sentinel_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / ".cx"
+            transcript = target / "data" / "visible-transcript.sqlite3"
+            managed = target / "runtime" / "cx2" / "module.py"
+            transcript.parent.mkdir(parents=True)
+            managed.parent.mkdir(parents=True)
+            sentinel = b"opaque-transcript\x00\xff\x10payload"
+            transcript.write_bytes(sentinel)
+            source = Path(tmp) / "module.py"
+            source.write_text("# upgraded", encoding="utf-8")
+            res = self._run_ps(
+                f'$resolvedTarget="{target}"\nCopy-Item -LiteralPath "{source}" '
+                f'-Destination "{managed}" -Force\n'
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(transcript.read_bytes(), sentinel)
+
+    def test_managed_rollback_preserves_transcript_sentinel_bytes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            target = Path(tmp) / ".cx"
+            transcript = target / "data" / "visible-transcript.sqlite3"
+            managed = target / "runtime" / "cx2" / "module.py"
+            backup = Path(tmp) / "rollback" / "runtime" / "cx2" / "module.py"
+            transcript.parent.mkdir(parents=True)
+            managed.parent.mkdir(parents=True)
+            backup.parent.mkdir(parents=True)
+            sentinel = b"rollback-opaque\x00transcript"
+            transcript.write_bytes(sentinel)
+            managed.write_text("candidate", encoding="utf-8")
+            backup.write_text("baseline", encoding="utf-8")
+            res = self._run_ps(
+                f'Copy-Item -LiteralPath "{backup}" -Destination "{managed}" -Force\n'
+            )
+            self.assertEqual(res.returncode, 0, res.stderr)
+            self.assertEqual(managed.read_text(encoding="utf-8"), "baseline")
+            self.assertEqual(transcript.read_bytes(), sentinel)
+
     def test_newly_created_managed_file_removed_on_successful_rollback(self):
         """Newly created managed files (e.g. cx_home.py) must be removed during rollback."""
         with tempfile.TemporaryDirectory() as tmp:

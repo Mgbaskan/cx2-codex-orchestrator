@@ -78,7 +78,11 @@ from cx2_runtime import (
     EXPECTED_ROUTER_VERSION,
     RUNTIME_VERSION,
     TurnTimeoutError,
+    _CX2_TERMINAL,
 )
+
+from terminal_pager import page_text
+from terminal_markdown import render_markdown
 
 from session_adapter import (
     detect_repo,
@@ -574,6 +578,9 @@ def print_interactive_help() -> None:
     print("  /new                   Persisted repo session/thread bağlantısını sıfırla.")
     print("  /session               Aktif repo session bilgisini göster.")
     print("  /quota                 Canlı Codex kota durumunu göster.")
+    print("  /last [--page]         Bu çalışma alanındaki son görünür yanıtı göster.")
+    print("  /transcript clear      Bu çalışma alanının görünür transcript'ini sil (onay ister).")
+    print("  /trace                 Son turn'ün kısa araç izini göster.")
     print("  /stats                 Yerel token telemetri özetini göster.")
     print("  /route <görev>         Model turnü başlatmadan routing sonucunu göster.")
     print("  /doctor                CX runtime sağlık kontrolünü çalıştır.")
@@ -708,10 +715,89 @@ def handle_interactive_command(
             "=== CX QUOTA ==="
         )
 
+        _CX2_TERMINAL.set_status_snapshot(quota=quota)
+
         production_cx.print_quota(
             quota
         )
 
+        return True, False
+
+    if folded in {"/last", "/last --page", "/last page"}:
+        if runtime is None:
+            print("[cx] /last yalnızca interaktif runtime içinde kullanılabilir.")
+            return True, False
+        response = runtime.last_visible_response(cwd=cwd, repo=repo, db=db)
+        if response is None:
+            print("[cx] Bu çalışma alanı için görünür transcript bulunamadı.")
+            return True, False
+        header = (
+            f"[cx] last · {response.state} · {response.line_count} lines · "
+            f"{response.retained_bytes}/{response.total_bytes} bytes"
+        )
+        body = render_markdown(response.text, color=bool(getattr(sys.stdout, "isatty", lambda: False)()))
+        if response.truncated:
+            body += "\n[cx] Uyarı: transcript 16 MiB sınırında kesildi."
+        rendered = header + "\n\n" + body
+        if folded != "/last":
+            page_text(rendered)
+        else:
+            print(rendered)
+        return True, False
+
+    if folded in {"/transcript clear", "/transcript-clear"}:
+        if runtime is None:
+            print("[cx] Transcript runtime içinde kullanılabilir.")
+            return True, False
+        if not (getattr(sys.stdin, "isatty", lambda: False)() and getattr(sys.stdout, "isatty", lambda: False)()):
+            print(
+                "[cx] Transcript temizleme yalnızca etkileşimli terminalde onaylanabilir.",
+                file=sys.stderr,
+            )
+            return True, False
+        try:
+            answer = input(
+                f"Görünür transcript yalnızca bu çalışma alanı için ({cwd}) silinsin mi? [y/N] "
+            ).strip().casefold()
+        except (EOFError, KeyboardInterrupt):
+            print("\n[cx] İptal edildi.")
+            return True, False
+        if answer not in {"y", "yes", "e", "evet"}:
+            print("[cx] İptal edildi; transcript korunuyor.")
+            return True, False
+        count = runtime.clear_visible_transcript(cwd=cwd)
+        print(f"[cx] {count} transcript kaydı silindi.")
+        return True, False
+
+    if folded in {"/trace", "/trace last"}:
+        trace = getattr(runtime, "last_trace", None) if runtime is not None else None
+        if not trace:
+            print("[cx] Bu runtime için araç izi yok.")
+        else:
+            dropped_entries = int(getattr(runtime, "last_trace_dropped_entries", 0) or 0)
+            if dropped_entries:
+                print(f"[cx] trace bounded to 64 commands; dropped={dropped_entries} older entries")
+            for index, entry in enumerate(trace, start=1):
+                print(
+                    f"{index}. {entry.get('command', '<command>')} · "
+                    f"{entry.get('status', 'unknown')} · exit={entry.get('exit_code', '?')} · "
+                    f"{entry.get('duration_ms', '?')}ms · cwd={entry.get('cwd', '?')}"
+                )
+                print(
+                    f"   classification={entry.get('classification', '')} · "
+                    f"host_execution={bool(entry.get('host_execution'))}"
+                )
+                if entry.get("output_snippet"):
+                    print(f"   output={entry['output_snippet']}")
+                for field in ("command", "cwd", "status", "classification"):
+                    dropped = int(entry.get(f"{field}_dropped_bytes", 0) or 0)
+                    if dropped:
+                        print(f"   {field} truncated; dropped={dropped} bytes")
+                if entry.get("output_truncated") or entry.get("output_dropped_bytes"):
+                    print(
+                        f"   output truncated; retained={len(str(entry.get('output_snippet', '')).encode('utf-8'))}/"
+                        f"{entry.get('output_total_bytes', 0)} bytes; dropped={entry.get('output_dropped_bytes', 0)} bytes"
+                    )
         return True, False
 
     if folded in {

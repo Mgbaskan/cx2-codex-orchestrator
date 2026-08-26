@@ -1209,6 +1209,9 @@ def handle_history_command(
                 thread_id,
             )
 
+            if runtime is not None and hasattr(runtime, "reset_memory_session"):
+                runtime.reset_memory_session()
+
             print(
                 "[cx] History thread selected."
             )

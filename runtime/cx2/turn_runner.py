@@ -46,6 +46,10 @@ from bounded_verification_runner import (
     is_verification_command_eligible,
     execute_bounded_verification_command,
 )
+from file_write_grants import (
+    FileWriteGrantRegistry,
+    ordinary_workspace_file_mutation,
+)
 
 
 # =============================================================
@@ -1288,6 +1292,8 @@ class StreamingTurnRunner:
         monotonic: Callable[[], float] | None = None,
         sleeper: Callable[[float], None] | None = None,
         timeout_reconciliation_grace: float = TIMEOUT_RECONCILIATION_GRACE_SEC,
+        file_write_grants: FileWriteGrantRegistry | None = None,
+        runtime_instance_nonce: str | None = None,
     ) -> None:
 
         self.client = client
@@ -1312,6 +1318,10 @@ class StreamingTurnRunner:
             0.0,
             min(float(timeout_reconciliation_grace), 5.0),
         )
+        self._transcript_sink: Any | None = None
+        self._transcript_warning_emitted = False
+        self.file_write_grants = file_write_grants
+        self.runtime_instance_nonce = runtime_instance_nonce
 
     @staticmethod
     def _agent_item_key(
@@ -1393,8 +1403,58 @@ class StreamingTurnRunner:
         return relationship, record
 
     def _render_canonical_delta(self, delta: str) -> None:
+        if delta and self._transcript_sink is not None:
+            try:
+                self._transcript_sink.append(delta)
+            except Exception as exc:
+                self._disable_transcript_sink(exc)
         if self.live and delta:
             _CX2_TERMINAL.agent_delta(delta)
+
+    def _disable_transcript_sink(self, exc: BaseException) -> None:
+        self._transcript_sink = None
+        if self._transcript_warning_emitted:
+            return
+        self._transcript_warning_emitted = True
+        if self.live:
+            _CX2_TERMINAL.warning(
+                "Kalıcı transcript kullanılamıyor; bu turn normal olarak devam ediyor "
+                f"({type(exc).__name__})."
+            )
+        else:
+            print(
+                "[cx] Uyarı: Kalıcı transcript kullanılamıyor; turn normal olarak devam ediyor "
+                f"({type(exc).__name__}).",
+                file=sys.stderr,
+            )
+
+    def _finalize_transcript(self, result: TurnRunResult) -> None:
+        sink = self._transcript_sink
+        self._transcript_sink = None
+        if sink is None:
+            return
+        try:
+            sink.finalize(
+                canonical_text=result.agent_text,
+                state=result.outcome,
+                phase=(
+                    "CANONICAL_FINAL"
+                    if result.outcome == "COMPLETED"
+                    else "TERMINAL_NON_SUCCESS"
+                ),
+                authoritative_source=result.canonical_final_source,
+                final_item_id=result.canonical_final_item_id,
+                reconciliation=result.final_reconciliations,
+            )
+            if getattr(sink, "truncated", False) and not self._transcript_warning_emitted:
+                self._transcript_warning_emitted = True
+                message = "Transcript 16 MiB sınırında kesildi; canlı yanıt normal olarak devam etti."
+                if self.live:
+                    _CX2_TERMINAL.warning(message)
+                else:
+                    print(f"[cx] Uyarı: {message}", file=sys.stderr)
+        except Exception as exc:
+            self._disable_transcript_sink(exc)
 
     @staticmethod
     def _discard_agent_item_state(
@@ -1945,6 +2005,9 @@ class StreamingTurnRunner:
         timeout: float | None = 300.0,
         idle_timeout: float | None = None,
         hard_timeout: float | None = None,
+        transcript_store: Any | None = None,
+        transcript_workspace_key: str | None = None,
+        transcript_display_workspace: str | None = None,
     ) -> TurnRunResult:
 
         if self.live:
@@ -1962,6 +2025,7 @@ class StreamingTurnRunner:
 
         self.current_permissions = permissions
         self.current_cwd = cwd
+        self._active_thread_id = str(thread_id)
 
         params = {
             "threadId":
@@ -2086,6 +2150,21 @@ class StreamingTurnRunner:
                 else None,
         )
 
+        self._transcript_sink = None
+        if transcript_store is not None and transcript_workspace_key:
+            try:
+                self._transcript_sink = transcript_store.start_response(
+                    thread_id=thread_id,
+                    turn_id=turn_id,
+                    workspace_key=transcript_workspace_key,
+                    display_workspace=(
+                        transcript_display_workspace
+                        or transcript_workspace_key
+                    ),
+                )
+            except Exception as exc:
+                self._disable_transcript_sink(exc)
+
         if status in FINAL_STATUSES:
             if status == "completed":
                 for final_item_id, direct_final_text in (
@@ -2099,6 +2178,7 @@ class StreamingTurnRunner:
                     )
 
             self._finalize_terminal_result(result)
+            self._finalize_transcript(result)
 
             if self.live:
                 _CX2_TERMINAL.turn_completed(
@@ -2120,6 +2200,7 @@ class StreamingTurnRunner:
             if result.status not in FINAL_STATUSES:
                 result.status = "interrupted"
             self._finalize_terminal_result(result, allow_recovery=False)
+            self._finalize_transcript(result)
             if self.live:
                 _CX2_TERMINAL.turn_completed(result.outcome.casefold())
             raise
@@ -2127,11 +2208,13 @@ class StreamingTurnRunner:
             if result.status not in FINAL_STATUSES:
                 result.status = "failed"
             self._finalize_terminal_result(result, allow_recovery=False)
+            self._finalize_transcript(result)
             if self.live:
                 _CX2_TERMINAL.turn_completed(result.outcome.casefold())
             raise
 
         self._finalize_terminal_result(completed_result)
+        self._finalize_transcript(completed_result)
 
         if self.live:
             _CX2_TERMINAL.turn_completed(
@@ -2825,6 +2908,33 @@ class StreamingTurnRunner:
     # Server -> client requests
     # ---------------------------------------------------------
 
+    def _file_grant_eligible(self, params: dict[str, Any]) -> bool:
+        if self.file_write_grants is None or not isinstance(self.current_cwd, Path):
+            return False
+        if not ordinary_workspace_file_mutation(params, workspace_root=self.current_cwd):
+            return False
+        return self.file_write_grants.has(
+            thread_id=str(getattr(self, "_active_thread_id", "")),
+            workspace_root=self.current_cwd,
+        )
+
+    def _record_file_grant(
+        self,
+        *,
+        thread_id: str,
+        cwd: Path,
+        params: dict[str, Any],
+        decision: str,
+    ) -> None:
+        if not isinstance(cwd, Path):
+            return
+        if (
+            self.file_write_grants is not None
+            and decision in {"acceptForSession", "approved_for_session"}
+            and ordinary_workspace_file_mutation(params, workspace_root=cwd)
+        ):
+            self.file_write_grants.grant(thread_id=thread_id, workspace_root=cwd)
+
     # CX2_INTERACTIVE_APPROVAL_DISPATCH_V1
     def _handle_server_request(
         self,
@@ -3027,6 +3137,11 @@ class StreamingTurnRunner:
                     "Additional permissions requested."
                 )
 
+            details.extend([
+                "Boundary: sandbox command approval; this is not a file-write session grant.",
+                "One-shot bounded execution only; a later request requires a new decision.",
+            ])
+
             # Build exact authorization identity
             cmd_text = str(command or "").strip()
             cwd_text = str(cwd or "").strip()
@@ -3129,12 +3244,27 @@ class StreamingTurnRunner:
                     + grant_root
                 )
 
+            details.extend([
+                "Scope: ordinary create/edit/normal patch inside this workspace only.",
+                "Session grant resets on /new, thread/workspace change, restart, or exit.",
+                "Not included: outside paths, deletes, shell/host execution, privileged permissions, or dangerFullAccess.",
+            ])
+
             decisions = [
                 "accept",
                 "acceptForSession",
                 "decline",
                 "cancel",
             ]
+
+            if self._file_grant_eligible(params):
+                granted_decision = (
+                    "acceptForSession"
+                    if "acceptForSession" in decisions
+                    else "accept"
+                )
+                send_decision(granted_decision)
+                return
 
             # Check circuit breaker for file changes too
             if result.interactive_approval_prompt_count >= self.max_approval_prompts_per_turn:
@@ -3153,6 +3283,13 @@ class StreamingTurnRunner:
                 details=details,
                 decisions=decisions,
                 default="decline",
+            )
+
+            self._record_file_grant(
+                thread_id=result.thread_id,
+                cwd=getattr(self, "current_cwd", None),
+                params=params,
+                decision=decision,
             )
 
             send_decision(decision)
@@ -3218,6 +3355,11 @@ class StreamingTurnRunner:
                         "Command: "
                         + command_text
                     )
+
+            details.extend([
+                "Boundary: sandbox command approval; this is not a file-write session grant.",
+                "One-shot bounded execution only; a later request requires a new decision.",
+            ])
 
             decisions = [
                 "approved",
@@ -3324,6 +3466,12 @@ class StreamingTurnRunner:
                     + grant_root
                 )
 
+            details.extend([
+                "Scope: ordinary create/edit/normal patch inside this workspace only.",
+                "Session grant resets on /new, thread/workspace change, restart, or exit.",
+                "Not included: outside paths, deletes, shell/host execution, privileged permissions, or dangerFullAccess.",
+            ])
+
             if isinstance(
                 file_changes,
                 dict,
@@ -3347,6 +3495,15 @@ class StreamingTurnRunner:
                 "abort",
             ]
 
+            if self._file_grant_eligible(params):
+                granted_decision = (
+                    "approved_for_session"
+                    if "approved_for_session" in decisions
+                    else "approved"
+                )
+                send_decision(granted_decision)
+                return
+
             if result.interactive_approval_prompt_count >= self.max_approval_prompts_per_turn:
                 result.circuit_breaker_opened = True
                 if not approval_state.circuit_warning_rendered:
@@ -3363,6 +3520,13 @@ class StreamingTurnRunner:
                 details=details,
                 decisions=decisions,
                 default="denied",
+            )
+
+            self._record_file_grant(
+                thread_id=result.thread_id,
+                cwd=getattr(self, "current_cwd", None),
+                params=params,
+                decision=decision,
             )
 
             send_decision(decision)
@@ -4031,6 +4195,21 @@ class StreamingTurnRunner:
                     "output_snippet": completed_summary.get("output_snippet", ""),
                     "classification_text": raw_out,
                     "cwd": cmd_cwd,
+                    "status": completed_summary.get("status"),
+                    "output_total_bytes": (
+                        accum.total_bytes_streamed
+                        if isinstance(accum, BoundedDiagnosticAccumulator)
+                        else len(str(accum or "").encode("utf-8"))
+                    ),
+                    "output_truncated": (
+                        isinstance(accum, BoundedDiagnosticAccumulator)
+                        and accum.total_bytes_streamed > accum.max_total_bytes
+                    ),
+                    "output_dropped_bytes": (
+                        max(0, accum.total_bytes_streamed - accum.max_total_bytes)
+                        if isinstance(accum, BoundedDiagnosticAccumulator)
+                        else 0
+                    ),
                     "item_completed": True,
                     "decision_finalized": True,
                     "bounded_host_execution": False,

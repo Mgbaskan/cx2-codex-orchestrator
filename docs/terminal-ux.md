@@ -50,3 +50,54 @@ During broad read-only inspections, CX2 evaluates verification completeness acro
 [audit] · UNVERIFIED · 2 checks
 ```
 *Note*: `inconclusive_count` is included in `total_checks` to ensure transparent accounting without producing false failure or passed claims.
+
+## CX2 2.0.13 terminal contract
+
+Visible canonical assistant responses are retained separately at
+`CX_HOME/data/visible-transcript.sqlite3`. The runtime stores UTF-8 chunks as
+they arrive (64 KiB flush target), retains at most 16 MiB per response, 200
+completed responses and 64 MiB of logical retained payload, and prunes records
+older than 30 days. The database is local plaintext. Raw reasoning, commentary
+items and App Server payloads are never copied into it. A failed transcript
+database produces a bounded warning and does not fail the turn.
+
+`/last` shows the latest response for the current safe thread/workspace
+context, including `partial`, `failed`, `interrupted` or `truncated` state.
+`/last --page` uses the built-in read-only pager and falls back to complete
+plain output when no interactive terminal is available. Its controls are
+Up/Down, PgUp/PgDn, Home/End, Space, Enter, `b`, `q`, Esc and Ctrl+C.
+`/transcript clear`
+requires an explicit interactive confirmation and only deletes transcript rows.
+
+File-write “for this session” approval is limited to ordinary create/edit/patch
+operations under the exact current workspace, and is held only in memory for
+the current runtime/thread. It is cleared by `/new`, a thread or workspace
+change, App Server restart, runtime replacement or CLI exit. It never covers
+shell/host execution, privileged permissions, destructive operations, another
+workspace or another process. Host execution remains a separate bounded,
+one-shot approval.
+
+`/trace` and `/trace last` show a bounded projection of the authoritative
+command ledger: exact command and CWD, status, exit code, duration,
+classification, host-execution flag, and bounded output/truncation evidence.
+The trace is memory-only, contains at most 64 commands from the previous
+completed turn, and is cleared on `/new`, App Server/runtime replacement or CLI
+exit. Oversized projected fields carry explicit retained/dropped-byte notices;
+trace does not survive restart.
+Quota is a pre-turn snapshot (or explicit `/quota` refresh), not a live feed;
+the status line reports its captured age and shows `? · unavailable` when no
+value exists. Matching token-usage events update context. Cursor/status UI,
+colour, Unicode glyphs and pager raw mode all have safe fallbacks for
+`NO_COLOR`, `TERM=dumb`, redirected streams, narrow consoles and screen-reader
+or static usage. Non-TTY output is deterministic plain text with no ANSI,
+spinner, cursor control or interactive approval prompt; required approvals
+decline fail-closed with an explicit diagnostic.
+
+Multiline `/paste` keeps `.send`, `.cancel`, escaped sentinels, UTF-8 and the
+1 MiB limit unchanged, and reports an accepted line/character count without
+logging the pasted content.
+
+Markdown presentation is intentionally small: headings, bold, inline and fenced
+code, simple lists, blockquotes, links and separators are formatted. Tables,
+nested block parsing and malformed or unfinished delimiters remain literal text.
+Formatting never changes the canonical response saved by the transcript store.

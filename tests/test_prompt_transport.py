@@ -450,6 +450,36 @@ services:
         res = capture_multiline_paste(input_func=mock_input, print_func=lambda *a: None)
         self.assertIsNone(res)
 
+    def test_39b_paste_summary_reports_counts_without_content(self) -> None:
+        inputs = iter(["Türkçe 🚀", "ikinci", ".send"])
+        output: list[str] = []
+        res = capture_multiline_paste(
+            input_func=lambda _prompt: next(inputs),
+            print_func=lambda value="": output.append(str(value)),
+        )
+        self.assertEqual(res, "Türkçe 🚀\nikinci")
+        self.assertIn("2 satır", output[-1])
+        self.assertIn(f"{len(res)} karakter", output[-1])
+        self.assertNotIn("Türkçe", "\n".join(output))
+
+    def test_39c_paste_exact_limit_and_over_limit(self) -> None:
+        exact = "a" * MAX_PROMPT_BYTES
+        output: list[str] = []
+        accepted = capture_multiline_paste(
+            input_func=lambda _prompt, values=iter([exact, ".send"]): next(values),
+            print_func=lambda value="": output.append(str(value)),
+        )
+        self.assertEqual(accepted, exact)
+        self.assertIn(f"{MAX_PROMPT_BYTES} karakter", output[-1])
+
+        output = []
+        rejected = capture_multiline_paste(
+            input_func=lambda _prompt, values=iter([exact + "b", ".send"]): next(values),
+            print_func=lambda value="": output.append(str(value)),
+        )
+        self.assertIsNone(rejected)
+        self.assertIn("sınırı aşıyor", output[-1])
+
     def test_40_main_cli_prompt_file_integration(self) -> None:
         p = self.temp_dir / "exec_task.md"
         p.write_bytes(b"Refactor service layer")

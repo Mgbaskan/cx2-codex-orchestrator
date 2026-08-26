@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -25,6 +26,7 @@ from turn_runner import (
     _cx2_extract_thread_final_answer,
 )
 from terminal_ui import TerminalRenderer
+from transcript_store import TranscriptStore
 
 
 class NullClient:
@@ -160,6 +162,7 @@ class TestFinalAnswerLifecycle(unittest.TestCase):
         thread_read: dict | None = None,
         live: bool = False,
         renderer: TerminalRenderer | None = None,
+        transcript_store: TranscriptStore | None = None,
     ) -> tuple[TurnRunResult, LifecycleClient]:
         clock = FakeClock()
         client = LifecycleClient(
@@ -185,6 +188,9 @@ class TestFinalAnswerLifecycle(unittest.TestCase):
             approval_policy="never",
             idle_timeout=1.0,
             hard_timeout=2.0,
+            transcript_store=transcript_store,
+            transcript_workspace_key="workspace" if transcript_store is not None else None,
+            transcript_display_workspace="workspace" if transcript_store is not None else None,
         )
         if renderer is None:
             return call(), client
@@ -886,6 +892,27 @@ class TestFinalAnswerLifecycle(unittest.TestCase):
         self.assertIn("◆ CODEX RESPONSE · RECONCILED", output)
         self.assertIn("CANONICAL", output)
         self.assertIn("✓ Completed", output)
+
+    def test_integrated_divergence_persists_only_authoritative_final_after_reopen(self) -> None:
+        notifications = [
+            (0.0, event("item/started", {"item": agent_item("f", "final_answer")})),
+            (0.0, event("item/agentMessage/delta", {"itemId": "f", "delta": "STALE STREAM"})),
+            (0.01, event("item/completed", {"item": agent_item("f", "final_answer", "CANONICAL FINAL")})),
+            (0.02, event("turn/completed", {"turn": {"id": "turn-1", "status": "completed"}})),
+        ]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "transcript.sqlite3"
+            store = TranscriptStore(path)
+            result, _client = self.run_integrated(notifications, transcript_store=store)
+            self.assertEqual(result.agent_text, "CANONICAL FINAL")
+            store.close()
+            reopened = TranscriptStore(path)
+            row = reopened.get_last(workspace_key="workspace", thread_id="thread-1")
+            self.assertIsNotNone(row)
+            self.assertEqual(row.text, "CANONICAL FINAL")
+            self.assertNotIn("STALE STREAM", row.text)
+            self.assertEqual(row.authoritative_source, "item/completed")
+            reopened.close()
 
     def test_integrated_completed_prefix_is_visibly_reconciled_non_tty(self) -> None:
         stream = io.StringIO()

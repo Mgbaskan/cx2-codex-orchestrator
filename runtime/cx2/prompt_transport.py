@@ -221,7 +221,7 @@ def capture_multiline_paste(
     - Single line '..cancel' is unescaped to literal '.cancel'.
     - All other lines are preserved as-is.
     """
-    print_func("[cx] Çok satırlı giriş modu.")
+    print_func("[cx] PASTE — çok satırlı giriş modu.")
     print_func("[cx] Göndermek için tek satırda .send")
     print_func("[cx] İptal etmek için tek satırda .cancel")
 
@@ -263,7 +263,12 @@ def capture_multiline_paste(
         return None
 
     try:
-        return validate_prompt_text(full_text, source_name="multiline paste")
+        validated = validate_prompt_text(full_text, source_name="multiline paste")
+        print_func(
+            f"[cx] PASTE kabul edildi: {len(lines)} satır, "
+            f"{len(validated)} karakter."
+        )
+        return validated
     except PromptTransportError as exc:
         print_func(f"[cx] Prompt hatası: {exc}")
         return None

@@ -22,6 +22,15 @@ from cx2_runtime import CX2ExecutionResult, CX2Runtime
 from turn_runner import StreamingTurnRunner, TurnRunResult
 
 
+def scoped_notification(method: str, params: dict[str, Any]) -> dict[str, Any]:
+    body = {
+        "threadId": "thread-test-1",
+        "turnId": "turn-test-1",
+    }
+    body.update(params)
+    return {"method": method, "params": body}
+
+
 class FakeProcess:
     """Mock subprocess.Popen object for testing process liveness."""
 
@@ -127,15 +136,10 @@ class TestAppServerLiveness(unittest.TestCase):
     def test_healthy_process_does_not_false_positive(self) -> None:
         """Healthy running process completes turn normally when turn/completed notification arrives."""
         fake_proc = FakeProcess(exit_codes=[None])
-        completion_event = {
-            "method": "turn/completed",
-            "params": {
-                "turn": {
-                    "id": "turn-test-1",
-                    "status": "completed",
-                }
-            }
-        }
+        completion_event = scoped_notification(
+            "turn/completed",
+            {"turn": {"id": "turn-test-1", "status": "completed"}},
+        )
         client = FakeLivenessClient(process=fake_proc, notifications=[completion_event])
         runner = StreamingTurnRunner(client, live=False, poll_interval=0.005)
 
@@ -148,15 +152,10 @@ class TestAppServerLiveness(unittest.TestCase):
     def test_terminal_completion_wins_race_over_process_exit(self) -> None:
         """If turn/completed arrives and process exits right after, terminal result wins."""
         fake_proc = FakeProcess(exit_codes=[0])  # process exited with 0
-        completion_event = {
-            "method": "turn/completed",
-            "params": {
-                "turn": {
-                    "id": "turn-test-1",
-                    "status": "completed",
-                }
-            }
-        }
+        completion_event = scoped_notification(
+            "turn/completed",
+            {"turn": {"id": "turn-test-1", "status": "completed"}},
+        )
         client = FakeLivenessClient(process=fake_proc, notifications=[completion_event])
         runner = StreamingTurnRunner(client, live=False, poll_interval=0.005)
 
@@ -170,15 +169,10 @@ class TestAppServerLiveness(unittest.TestCase):
         """If process exited but dispatcher thread has buffered turn/completed, final event must win."""
         fake_proc = FakeProcess(exit_codes=[0])  # process has exited
 
-        completion_event = {
-            "method": "turn/completed",
-            "params": {
-                "turn": {
-                    "id": "turn-test-1",
-                    "status": "completed",
-                }
-            }
-        }
+        completion_event = scoped_notification(
+            "turn/completed",
+            {"turn": {"id": "turn-test-1", "status": "completed"}},
+        )
 
         # Mock a dispatcher thread that delivers the completion event upon join()
         client = FakeLivenessClient(process=fake_proc)
@@ -248,15 +242,10 @@ class TestAppServerLiveness(unittest.TestCase):
     # -------------------------------------------------------------
     def test_missing_process_handle_backward_safe(self) -> None:
         """Test client without process attribute completes normally without AttributeError."""
-        completion_event = {
-            "method": "turn/completed",
-            "params": {
-                "turn": {
-                    "id": "turn-test-1",
-                    "status": "completed",
-                }
-            }
-        }
+        completion_event = scoped_notification(
+            "turn/completed",
+            {"turn": {"id": "turn-test-1", "status": "completed"}},
+        )
         client = FakeLivenessClient(process=None, notifications=[completion_event])
         runner = StreamingTurnRunner(client, live=False, poll_interval=0.005)
 
@@ -271,15 +260,10 @@ class TestAppServerLiveness(unittest.TestCase):
         broken_proc = MagicMock()
         broken_proc.poll.side_effect = OSError("Access denied probing process")
 
-        completion_event = {
-            "method": "turn/completed",
-            "params": {
-                "turn": {
-                    "id": "turn-test-1",
-                    "status": "completed",
-                }
-            }
-        }
+        completion_event = scoped_notification(
+            "turn/completed",
+            {"turn": {"id": "turn-test-1", "status": "completed"}},
+        )
         client = FakeLivenessClient(process=broken_proc, notifications=[completion_event])
         runner = StreamingTurnRunner(client, live=False, poll_interval=0.005)
 
@@ -291,19 +275,19 @@ class TestAppServerLiveness(unittest.TestCase):
     # -------------------------------------------------------------
     def test_partial_command_ledger_preserved_on_death(self) -> None:
         """Commands completed before App Server death remain in TurnRunResult."""
-        cmd_started = {
-            "method": "item/started",
-            "params": {
+        cmd_started = scoped_notification(
+            "item/started",
+            {
                 "item": {
                     "id": "cmd-item-1",
                     "type": "commandExecution",
                     "command": "git status",
                 }
-            }
-        }
-        cmd_completed = {
-            "method": "item/completed",
-            "params": {
+            },
+        )
+        cmd_completed = scoped_notification(
+            "item/completed",
+            {
                 "item": {
                     "id": "cmd-item-1",
                     "type": "commandExecution",
@@ -311,8 +295,8 @@ class TestAppServerLiveness(unittest.TestCase):
                     "exitCode": 0,
                     "durationMs": 50,
                 }
-            }
-        }
+            },
+        )
         fake_proc = FakeProcess(exit_codes=[None, 1])
         client = FakeLivenessClient(process=fake_proc, notifications=[cmd_started, cmd_completed])
         runner = StreamingTurnRunner(client, live=False, poll_interval=0.005)
@@ -408,15 +392,10 @@ class TestAppServerLiveness(unittest.TestCase):
     def test_delayed_dispatcher_within_grace_wins(self) -> None:
         """If dispatcher thread delivers final event within 1.0s grace, terminal result wins."""
         fake_proc = FakeProcess(exit_codes=[0])
-        completion_event = {
-            "method": "turn/completed",
-            "params": {
-                "turn": {
-                    "id": "turn-test-1",
-                    "status": "completed",
-                }
-            }
-        }
+        completion_event = scoped_notification(
+            "turn/completed",
+            {"turn": {"id": "turn-test-1", "status": "completed"}},
+        )
         client = FakeLivenessClient(process=fake_proc)
 
         class DelayedDispatcher(threading.Thread):

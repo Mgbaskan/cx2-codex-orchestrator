@@ -14,6 +14,10 @@ from verification_gate import VerificationAssessment, unwrap_display_command
 
 class TestTerminalUI(unittest.TestCase):
 
+    class TTYStream(io.StringIO):
+        def isatty(self):
+            return True
+
     def _make_assessment(self, status="VERIFIED", changed_files=None, valid_cmds=None, reason=""):
         return VerificationAssessment(
             status=status,
@@ -41,6 +45,88 @@ class TestTerminalUI(unittest.TestCase):
         )
         out = stream.getvalue()
         self.assertIn("[cx] RESUME · gpt-5.6-luna · low · read-only · 27% kaldı · CONSERVE", out)
+
+    def test_consecutive_turns_reset_diff_state(self):
+        stream = io.StringIO()
+        renderer = TerminalRenderer(stream=stream)
+        renderer.begin_turn()
+        renderer.diff_updated("same diff")
+        renderer.begin_turn()
+        renderer.diff_updated("same diff")
+        self.assertEqual(stream.getvalue().count("same diff"), 2)
+
+    def test_same_item_id_is_not_folded_across_turns(self):
+        stream = self.TTYStream()
+        renderer = TerminalRenderer(stream=stream, max_command_lines=10)
+        folded = "".join(f"line {index}\n" for index in range(12))
+        renderer.begin_turn()
+        renderer.command_output_delta("same-id", folded)
+        renderer.begin_turn()
+        renderer.command_output_delta("same-id", "visible next turn\n")
+        self.assertIn("visible next turn", stream.getvalue())
+
+    def test_successful_confirmed_response_has_header_and_footer(self):
+        stream = self.TTYStream()
+        renderer = TerminalRenderer(stream=stream)
+        with patch.dict("os.environ", {"NO_COLOR": "1"}):
+            renderer.begin_turn()
+            renderer.agent_delta("line one\nline two")
+            renderer.turn_completed("completed", duration_ms=1250, line_count=2)
+        output = stream.getvalue()
+        self.assertIn("◆ CODEX RESPONSE", output)
+        self.assertIn("✓ Completed · 1.2s · 2 lines", output)
+
+    def test_unsuccessful_turns_never_have_success_footer(self):
+        for status in ("failed", "interrupted", "idle_timeout", "hard_timeout", "blocked"):
+            with self.subTest(status=status):
+                stream = self.TTYStream()
+                renderer = TerminalRenderer(stream=stream)
+                with patch.dict("os.environ", {"NO_COLOR": "1"}):
+                    renderer.begin_turn()
+                    renderer.agent_delta("partial")
+                    renderer.turn_completed(status, duration_ms=100, line_count=1)
+                self.assertNotIn("✓ Completed", stream.getvalue())
+
+    def test_non_tty_response_is_plain_newline_complete_without_ansi(self):
+        stream = io.StringIO()
+        renderer = TerminalRenderer(stream=stream)
+        renderer.begin_turn()
+        renderer.agent_delta("answer")
+        renderer.turn_completed("completed", duration_ms=10, line_count=1)
+        self.assertEqual(stream.getvalue(), "answer\n")
+        self.assertNotIn("\x1b[", stream.getvalue())
+
+    def test_non_tty_reconciliation_marker_and_authoritative_text_are_visible(self):
+        stream = io.StringIO()
+        renderer = TerminalRenderer(stream=stream)
+        renderer.begin_turn()
+        renderer.agent_delta("stale")
+        renderer.response_reconciled("authoritative")
+        renderer.turn_completed("completed", line_count=1)
+        output = stream.getvalue()
+        self.assertIn("stale\n[cx] RESPONSE RECONCILED", output)
+        self.assertIn("◆ CODEX RESPONSE · RECONCILED", output)
+        self.assertTrue(output.endswith("authoritative\n"))
+        self.assertNotIn("\x1b[", output)
+
+    def test_confirmed_empty_response_has_tty_boundary_and_zero_line_footer(self):
+        stream = self.TTYStream()
+        renderer = TerminalRenderer(stream=stream)
+        with patch.dict("os.environ", {"NO_COLOR": "1"}):
+            renderer.begin_turn()
+            renderer.confirm_empty_response()
+            renderer.turn_completed("completed", line_count=0)
+        output = stream.getvalue()
+        self.assertIn("◆ CODEX RESPONSE", output)
+        self.assertIn("✓ Completed · 0 lines", output)
+
+    def test_confirmed_empty_response_fabricates_nothing_non_tty(self):
+        stream = io.StringIO()
+        renderer = TerminalRenderer(stream=stream)
+        renderer.begin_turn()
+        renderer.confirm_empty_response()
+        renderer.turn_completed("completed", line_count=0)
+        self.assertEqual(stream.getvalue(), "")
 
     def test_semantic_command_unwrap(self):
         raw = 'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "git status --short"'

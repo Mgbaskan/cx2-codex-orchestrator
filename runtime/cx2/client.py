@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 import json
 import os
@@ -8,7 +9,7 @@ import queue
 import subprocess
 import threading
 import time
-from typing import Any
+from typing import Any, Callable
 
 from cx_home import resolve_cx_home
 
@@ -101,6 +102,13 @@ class AppServerClient:
         self.notifications: queue.Queue[
             dict[str, Any]
         ] = queue.Queue()
+
+        # Notifications retained by a selective terminal-boundary drain.
+        # This backlog is client-owned so it survives individual turn runners.
+        self._notification_backlog: deque[
+            dict[str, Any]
+        ] = deque()
+        self._notification_drain_lock = threading.Lock()
 
         self.server_requests: queue.Queue[
             dict[str, Any]
@@ -697,9 +705,45 @@ class AppServerClient:
         self,
     ) -> list[dict[str, Any]]:
 
-        return self._drain(
-            self.notifications
-        )
+        with self._notification_drain_lock:
+            result = list(
+                self._notification_backlog
+            )
+            self._notification_backlog.clear()
+            result.extend(
+                self._drain(
+                    self.notifications
+                )
+            )
+            return result
+
+    def drain_matching_notifications(
+        self,
+        predicate: Callable[[dict[str, Any]], bool],
+    ) -> list[dict[str, Any]]:
+        """Consume matching notifications while preserving all others in FIFO order."""
+
+        with self._notification_drain_lock:
+            available = list(
+                self._notification_backlog
+            )
+            self._notification_backlog.clear()
+            available.extend(
+                self._drain(
+                    self.notifications
+                )
+            )
+
+            matched: list[dict[str, Any]] = []
+            for notification in available:
+                if predicate(notification):
+                    matched.append(notification)
+                else:
+                    self._notification_backlog.append(
+                        notification
+                    )
+
+            return matched
 
     def drain_server_requests(
         self,

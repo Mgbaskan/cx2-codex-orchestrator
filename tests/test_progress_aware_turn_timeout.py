@@ -131,8 +131,8 @@ class TestProgressAwareTurnTimeout(unittest.TestCase):
 
     def test_active_progress_extends_idle_past_old_absolute_limit(self) -> None:
         schedule = [
-            (200.0, event("item/agentMessage/delta", {"delta": "a"})),
-            (400.0, event("item/agentMessage/delta", {"delta": "b"})),
+            (200.0, event("item/agentMessage/delta", {"itemId": "a", "delta": "a"})),
+            (400.0, event("item/agentMessage/delta", {"itemId": "a", "delta": "b"})),
             (600.0, event("item/commandExecution/outputDelta", {"itemId": "c", "delta": "ok"})),
             completed(700.0),
         ]
@@ -162,7 +162,7 @@ class TestProgressAwareTurnTimeout(unittest.TestCase):
     def test_hard_timeout_wins_despite_continuous_progress(self) -> None:
         clock = FakeClock()
         schedule = [
-            (at, event("item/agentMessage/delta", {"delta": "x"}))
+            (at, event("item/agentMessage/delta", {"itemId": "a", "delta": "x"}))
             for at in (2.0, 4.0, 6.0, 8.0, 10.0)
         ]
         client = ScheduledClient(clock, schedule)
@@ -201,7 +201,7 @@ class TestProgressAwareTurnTimeout(unittest.TestCase):
 
     def test_non_empty_delta_and_item_lifecycle_events_are_activity(self) -> None:
         activity_events = [
-            event("item/agentMessage/delta", {"delta": "agent"}),
+            event("item/agentMessage/delta", {"itemId": "a", "delta": "agent"}),
             event("item/commandExecution/outputDelta", {"itemId": "c", "delta": "output"}),
             event("item/started", {"item": {"id": "x", "type": "webSearch"}}),
             event("item/completed", {"item": {"id": "x", "type": "webSearch"}}),
@@ -311,6 +311,36 @@ class TestProgressAwareTurnTimeout(unittest.TestCase):
         self.assertEqual(caught.exception.kind, "idle")
         self.assertEqual(result.status, "interrupted")
         self.assertEqual(client.interrupt_count, 1)
+
+    def test_timeout_late_final_evidence_never_becomes_success(self) -> None:
+        clock = FakeClock()
+        late_final = event(
+            "item/completed",
+            {
+                "item": {
+                    "id": "final",
+                    "type": "agentMessage",
+                    "phase": "final_answer",
+                    "text": "late evidence",
+                }
+            },
+        )
+        client = ScheduledClient(clock, [(3.1, late_final)])
+        result = self.make_result()
+        runner = StreamingTurnRunner(
+            client,
+            live=False,
+            poll_interval=1.0,
+            monotonic=clock.monotonic,
+            sleeper=clock.sleep,
+        )
+        with self.assertRaises(TurnTimeoutError) as caught:
+            runner.wait_for_turn(result, idle_timeout=3.0, hard_timeout=20.0)
+        self.assertEqual(caught.exception.kind, "idle")
+        self.assertEqual(result.outcome, "IDLE_TIMEOUT")
+        self.assertEqual(result.status, "failed")
+        self.assertEqual(result.agent_text, "late evidence")
+        self.assertTrue(result.authoritative_final_evidence)
 
 
 if __name__ == "__main__":

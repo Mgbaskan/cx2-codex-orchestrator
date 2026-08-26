@@ -356,6 +356,23 @@ class CX2ExecutionResult:
 
     verification_summary: dict[str, Any] | None = None
 
+    @property
+    def outcome(self) -> str:
+        if self.blocked:
+            return "BLOCKED"
+        raw_outcome = getattr(self.raw_turn_result, "outcome", None)
+        if isinstance(raw_outcome, str) and raw_outcome:
+            return raw_outcome
+        if self.final_result is not None:
+            status = str(self.final_result.status).casefold()
+            if status in {"completed", "success"}:
+                return "COMPLETED"
+            if status == "failed":
+                return "FAILED"
+            if status == "interrupted":
+                return "INTERRUPTED"
+        return "PROCESS_OR_PROTOCOL_FAILURE"
+
 
 def _check_contract() -> None:
 

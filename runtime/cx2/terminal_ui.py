@@ -56,6 +56,29 @@ class TerminalRenderer:
 
         self._last_diff: str = ""
         self._needs_agent_separator: bool = False
+        self._response_open: bool = False
+        self._response_has_text: bool = False
+        self._response_ends_with_newline: bool = True
+
+    def begin_turn(self) -> None:
+        """Reset every presentation field whose meaning is scoped to one turn."""
+        self.stop_activity()
+        self._folded_items.clear()
+        self._visible_lines.clear()
+        self._last_diff = ""
+        self._needs_agent_separator = False
+        self._response_open = False
+        self._response_has_text = False
+        self._response_ends_with_newline = True
+
+    def _begin_response(self) -> None:
+        if self._response_open:
+            return
+        self._response_open = True
+        if self.is_tty:
+            self._line()
+            self._line(self._bold("◆ CODEX RESPONSE"))
+            self._line(self._dim("─" * min(40, self.terminal_width())))
 
     # ---------------------------------------------------------
     # Environment
@@ -779,12 +802,62 @@ class TerminalRenderer:
 
         self.stop_activity()
 
+        self._begin_response()
+
         if self._needs_agent_separator:
             self._line()
             self._needs_agent_separator = False
 
         self._write(
             delta
+        )
+        if delta:
+            self._response_has_text = True
+            self._response_ends_with_newline = delta.endswith("\n")
+
+    def confirm_empty_response(self) -> None:
+        """Open the TTY response boundary for an authoritative empty final."""
+
+        self.stop_activity()
+        self._begin_response()
+
+    def response_reconciled(
+        self,
+        authoritative_text: str,
+    ) -> None:
+        """Visibly replace a stale streamed representation with canonical text."""
+
+        self.stop_activity()
+        if self._response_has_text and not self._response_ends_with_newline:
+            self._line()
+        self._line(
+            "[cx] RESPONSE RECONCILED — authoritative final response differs "
+            "from the streamed representation."
+        )
+        if self.is_tty:
+            self._line(self._bold("◆ CODEX RESPONSE · RECONCILED"))
+            self._line(self._dim("─" * min(40, self.terminal_width())))
+        else:
+            self._line("◆ CODEX RESPONSE · RECONCILED")
+
+        self._response_open = True
+        self._write(authoritative_text)
+        self._response_has_text = bool(authoritative_text)
+        self._response_ends_with_newline = (
+            not authoritative_text or authoritative_text.endswith("\n")
+        )
+
+    def response_ambiguity(
+        self,
+        reason: str,
+    ) -> None:
+        self.stop_activity()
+        if self._response_has_text and not self._response_ends_with_newline:
+            self._line()
+            self._response_ends_with_newline = True
+        self._line(
+            "[cx] RESPONSE REJECTED — ambiguous authoritative final response "
+            f"({reason})."
         )
 
     # ---------------------------------------------------------
@@ -1205,7 +1278,7 @@ class TerminalRenderer:
             [cx] RESUME · gpt-5.6-luna · low · read-only · 27% kaldı
             [cx] RESUME · gpt-5.6-luna · low · read-only · 27% kaldı · CONSERVE
         """
-        self.stop_activity()
+        self.begin_turn()
 
         mode_str = "RESUME" if str(session_mode).lower() == "resume" else "NEW"
         parts = [mode_str, str(model)]
@@ -1275,7 +1348,7 @@ class TerminalRenderer:
         self,
     ) -> None:
 
-        self._needs_agent_separator = False
+        self.begin_turn()
 
         self.start_activity(
             "İşleniyor"
@@ -1284,10 +1357,17 @@ class TerminalRenderer:
     def turn_completed(
         self,
         status: str,
+        *,
+        duration_ms: int | None = None,
+        line_count: int | None = None,
     ) -> None:
 
         self.stop_activity()
         self._needs_agent_separator = False
+
+        if self._response_has_text and not self._response_ends_with_newline:
+            self._line()
+            self._response_ends_with_newline = True
 
         if status not in {
             "completed",
@@ -1299,8 +1379,17 @@ class TerminalRenderer:
                     + str(status)
                 )
             )
-        else:
-            self._line()
+        elif self._response_open and self.is_tty:
+            self._line(self._dim("─" * min(40, self.terminal_width())))
+            details: list[str] = []
+            if isinstance(duration_ms, int) and duration_ms >= 0:
+                details.append(f"{duration_ms / 1000:.1f}s")
+            if isinstance(line_count, int) and line_count >= 0:
+                details.append(f"{line_count} lines")
+            suffix = " · " + " · ".join(details) if details else ""
+            self._line(self._green("✓ Completed") + suffix)
+
+        self._response_open = False
 
     # ---------------------------------------------------------
     # Diagnostics

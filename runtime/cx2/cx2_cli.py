@@ -956,11 +956,14 @@ def execute_one_shot(
             input_items=input_items,
         )
 
-        return (
-            2
-            if result.blocked
-            else 0
-        )
+        outcome = result.outcome
+        if outcome == "COMPLETED":
+            return 0
+        if outcome == "BLOCKED":
+            return 2
+        if outcome == "INTERRUPTED":
+            return 130
+        return 1
 
     except KeyboardInterrupt:
         print("\n[cx] Tur durduruldu.", file=sys.stderr)

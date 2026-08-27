@@ -3953,7 +3953,7 @@ def main() -> int:
         print("  Bu yardımı göster.")
         print()
         print("/quota")
-        print("  Canlı Codex kota durumunu göster.")
+        print("  Codex kota anlık görüntüsünü yenileyip göster.")
         print()
         print("/stats")
         print("  Yerel token telemetri özetini göster.")

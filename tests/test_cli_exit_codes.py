@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import sqlite3
 from pathlib import Path
 import sys
@@ -43,6 +44,19 @@ def execution(status: str, *, blocked: bool = False) -> CX2ExecutionResult:
 
 
 class TestCLIExitCodes(unittest.TestCase):
+    def test_release_version_surface(self) -> None:
+        self.assertEqual(cx2_cli.CLI_VERSION, "2.0.13")
+        self.assertEqual(cx2_cli.RUNTIME_VERSION, "2.0.13")
+        self.assertEqual(cx2_cli.EXPECTED_ROUTER_VERSION, "1.2.2")
+        output = io.StringIO()
+        with patch("sys.stdout", output):
+            exit_code = cx2_cli.main(["--version"])
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(
+            output.getvalue().splitlines(),
+            ["CX2 CLI 2.0.13", "CX2 runtime 2.0.13", "Router 1.2.2"],
+        )
+
     def test_returned_turn_status_cannot_fall_through_to_success(self) -> None:
         cases = [
             (execution("completed"), 0),

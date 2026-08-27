@@ -7,6 +7,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.0.13] - 2026-08-27
+
+### Added
+- Durable, locally stored visible assistant transcripts with `/last`, optional built-in paging through `/last --page`, and explicitly confirmed workspace-scoped deletion through `/transcript clear`.
+- A session-scoped ordinary workspace file-write grant keyed to the runtime instance, App Server thread and canonical workspace root. The grant covers only ordinary create/edit/patch operations inside that workspace.
+- Compact bounded tool activity and the memory-only `/trace` / `/trace last` view for the previous completed turn, including command, working directory, status, exit code, duration, classification, host-execution provenance and explicit truncation evidence.
+- Lightweight presentation-only terminal Markdown for headings, emphasis, inline and fenced code, simple lists, blockquotes, links and separators.
+
+### Changed
+- Upgraded CLI version (`CLI_VERSION = "2.0.13"`) and runtime version (`RUNTIME_VERSION = "2.0.13"`). Router remains `1.2.2` and the validated Codex baseline remains `0.144.4`.
+- The `CODEX RESPONSE` lifecycle now presents a single verified semantic outcome: success exits `0`, failure exits `1`, blocked exits `2`, and interruption exits `130`.
+- Terminal output now keeps visible assistant text durable across transient rendering, uses compact tool activity, and presents approvals and errors without making model prose authoritative.
+- `/quota` explicitly refreshes the last-known quota snapshot and status reports `capturedAt` freshness age. No background quota polling occurs, unavailable values are not fabricated, and context is updated only from matching token-usage events.
+- `/paste` reports accepted line and character counts without logging the pasted content while preserving `.send`, `.cancel`, escaped sentinels, strict UTF-8 and the 1 MiB input limit.
+- TTY and non-TTY paths now have bounded Windows-first fallbacks for narrow terminals, redirected streams, `NO_COLOR`, `TERM=dumb`, static/screen-reader output, pager failures and cursor-control failures.
+
+### Reliability
+- Replaced the progress-insensitive absolute turn deadline with distinct monotonic idle and hard timeouts. Meaningful turn events extend idle time, active commands suppress idle expiry while remaining hard-bounded, and human approval wait remains excluded from charged runtime.
+- Timeout handling performs a final completion-winning drain, requests `turn/interrupt` at most once, and retains bounded partial command diagnostics in a typed idle/hard timeout failure.
+- Ordinary interactive prompts and `/paste` share one exception boundary, so expected timeouts render cleanly without escaping to the CLI traceback handler.
+- Added explicit `execution.turn_idle_timeout_sec` and `execution.turn_hard_timeout_sec` tier maps while retaining `execution.turn_timeout_sec` as a backward-compatible idle override.
+- Visible transcript retention is bounded to 16 MiB per response, 200 completed responses, 64 MiB of logical retained payload and 30 days. Trace and tool-activity state are also bounded.
+
+### Security and Privacy
+- Model turns remain effectively `read-only` on the qualified Windows/Codex 0.144.4 compatibility path; native Windows `workspaceWrite` degradation remains in effect.
+- Host execution remains separate, explicit, bounded and one-shot. File-write grants do not authorize shell or host execution, destructive operations, privilege escalation, `dangerFullAccess`, unresolved or outside-workspace paths, or another thread/workspace/runtime/process.
+- The transcript database stores canonical visible assistant response text and approved lifecycle metadata only. It does not retain raw reasoning, hidden chain-of-thought, commentary, raw protocol payloads, command output or approval secrets.
+- Multiple-final ambiguity, notification FIFO ordering, failure and timeout precedence, approval decline fail-closed behavior, `SANDBOX_DENIED` classification, `TEST_FAILURE` precedence and ripgrep exit-1 neutrality remain preserved.
+
+### Known Limits
+- Quota is a last-known snapshot rather than a live-polled feed, and trace state does not survive runtime replacement or CLI exit.
+- Markdown tables, nested block parsing, and malformed or unfinished delimiters remain literal text.
+- Transcript data is local plaintext under `CX_HOME/data/visible-transcript.sqlite3`; no persistence mechanism provides a zero-risk security guarantee.
+
+### Qualification
+- Validated with 540 deterministic tests, including targeted version, terminal UX, transcript, pager, grant, trace, status, paste, lifecycle, installer rollback and security/failure-classification coverage.
+- A disposable Windows installation was upgraded from the immutable `v2.0.12` tag to the prepared 2.0.13 tree with policy, usage database, arbitrary transcript bytes and user-state sentinels preserved. An induced dependency-install failure then completed transactional rollback with managed files, virtual environment and user state restored byte-for-byte.
+
+## [2.0.12] - 2026-08-25
+
 ### Fixed
 - Replaced the progress-insensitive absolute turn deadline with distinct monotonic idle and hard timeouts. Meaningful turn events extend idle time, active commands suppress idle expiry while remaining hard-bounded, and human approval wait remains excluded from charged runtime.
 - Timeout handling now performs a final completion-winning drain, requests `turn/interrupt` at most once, and retains bounded partial command diagnostics in a typed idle/hard timeout failure.

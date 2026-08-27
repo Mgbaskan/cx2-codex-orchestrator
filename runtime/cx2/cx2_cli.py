@@ -89,7 +89,7 @@ from session_adapter import (
 )
 
 
-CLI_VERSION = "2.0.12"
+CLI_VERSION = "2.0.13"
 
 
 class CX2CLIError(
@@ -169,7 +169,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--quota",
         action="store_true",
         help=(
-            "Canlı Codex kota durumunu göster; "
+            "Codex kota anlık görüntüsünü yenileyip göster; "
             "model turnü başlatmaz"
         ),
     )
@@ -577,7 +577,7 @@ def print_interactive_help() -> None:
     print("Oturum")
     print("  /new                   Persisted repo session/thread bağlantısını sıfırla.")
     print("  /session               Aktif repo session bilgisini göster.")
-    print("  /quota                 Canlı Codex kota durumunu göster.")
+    print("  /quota                 Codex kota anlık görüntüsünü yenileyip göster.")
     print("  /last [--page]         Bu çalışma alanındaki son görünür yanıtı göster.")
     print("  /transcript clear      Bu çalışma alanının görünür transcript'ini sil (onay ister).")
     print("  /trace                 Son turn'ün kısa araç izini göster.")

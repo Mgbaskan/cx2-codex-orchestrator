@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
-[![Release](https://img.shields.io/badge/release-v2.0.11-green.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/releases/tag/v2.0.11)
+[![Release](https://img.shields.io/badge/release-v2.0.13-green.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/releases/tag/v2.0.13)
 [![Tests](https://github.com/Mgbaskan/cx2-codex-orchestrator/actions/workflows/test.yml/badge.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/actions/workflows/test.yml)
 
 **CX2** is a Windows-first, policy-driven orchestration and terminal UX layer for OpenAI Codex.
@@ -316,6 +316,27 @@ can be displayed as:
 ```
 
 The original raw command remains available internally for execution and verification logic.
+
+Visible assistant responses have an explicit `CODEX RESPONSE` lifecycle and a
+single semantic outcome. Canonical response text is retained locally in the
+bounded `CX_HOME/data/visible-transcript.sqlite3` store; `/last` retrieves the
+latest response for the safe thread/workspace context and `/last --page` opens
+the built-in read-only pager. `/transcript clear` requires interactive
+confirmation and removes only visible transcript rows for the current
+workspace. Raw reasoning, commentary, protocol payloads, command output and
+approval secrets are not copied into the transcript database.
+
+`/trace` provides a bounded, memory-only summary of the previous completed
+turn's tool activity. Quota shown in the status line is the last-known pre-turn
+snapshot (or an explicit `/quota` refresh), with capture age; it is not a
+background live-polled feed. Lightweight Markdown presentation never changes
+the canonical stored response, and tables remain literal text.
+
+Ordinary workspace file-write approval may be remembered only for the current
+runtime, App Server thread and canonical workspace root. It covers ordinary
+create/edit/patch operations inside that workspace only. Shell or host
+execution, destructive changes, privilege escalation and outside-workspace
+writes remain separate and are never authorized by that grant.
 
 ---
 
@@ -704,7 +725,10 @@ cx --route-file .\task.md
 | --------------- | ----------------------------- |
 | `/new`          | Start a fresh session binding |
 | `/session`      | Display current session state |
-| `/quota`        | Display live quota state      |
+| `/quota`        | Refresh and display the last-known quota snapshot |
+| `/last [--page]` | Show the latest visible response, optionally in the built-in pager |
+| `/transcript clear` | Confirm and clear visible transcript rows for this workspace |
+| `/trace`        | Show the bounded tool trace for the previous completed turn |
 | `/stats`        | Display usage statistics      |
 | `/route <task>` | Preview routing decision      |
 | `/doctor`       | Run runtime diagnostics       |
@@ -838,7 +862,7 @@ No specific optimization or token-saving percentage is guaranteed.
 
 # Known Limitations
 
-CX2 v2.0.11 currently has several known limitations.
+CX2 v2.0.13 currently has several known limitations.
 
 ### Windows-first
 
@@ -903,7 +927,7 @@ Broad audits on massive codebases with hundreds of files may require custom turn
 Current stable release:
 
 ```text
-CX2 2.0.11
+CX2 2.0.13
 ```
 
 Status:
@@ -914,6 +938,13 @@ STABLE / FROZEN
 
 The public release includes:
 
+- verified `CODEX RESPONSE` lifecycle and semantic one-shot exit outcomes
+- durable bounded visible assistant transcripts with `/last` and `/last --page`
+- confirmed `/transcript clear` and memory-only bounded `/trace`
+- session-scoped ordinary workspace file-write approval
+- lightweight terminal Markdown and TTY/non-TTY fallbacks
+- truthful last-known quota freshness and matching context usage
+- improved `/paste`, approval, and error presentation
 - streamed command output diagnostic classification (`outputDelta`)
 - bounded per-command head+tail diagnostic retention (64 KiB head + 448 KiB tail, max 512 KiB)
 - failure precedence over permission noise (genuine test/typecheck/lint/build failures)

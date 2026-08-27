@@ -14,7 +14,11 @@ Verification evidence requires exit code 0 from legitimate test execution withou
 
 ## Fail-Closed Mutation Authorization
 
-Under Windows Codex 0.144.4 compatibility mode, effective execution operates in `read-only` sandbox with `approval_policy = "on-request"`. Any file mutation or command execution outside read-only bounds requires explicit one-shot user approval. User decline is fail-closed and preserves the filesystem.
+Under Windows Codex 0.144.4 compatibility mode, effective execution operates in `read-only` sandbox with `approval_policy = "on-request"`. Authorization is explicit. A user may remember ordinary create/edit/patch approval only for the current runtime instance, App Server thread, and canonical workspace root. This in-memory grant cannot authorize unresolved or outside-workspace paths, destructive changes, shell/host execution, privilege escalation, `dangerFullAccess`, or another thread/workspace/runtime/process. User decline remains fail-closed and preserves the filesystem.
+
+## Visible Transcript Privacy
+
+The bounded local plaintext transcript database retains canonical visible assistant response text and approved lifecycle metadata only. Raw reasoning, hidden chain-of-thought, commentary, raw protocol payloads, command output, and approval secrets are not copied into it. `/transcript clear` requires confirmation and deletes visible transcript rows for the current workspace.
 
 ## No Global Host Fallback
 

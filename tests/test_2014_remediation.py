@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import statistics
 import subprocess
 import sys
@@ -19,6 +20,7 @@ import _bootstrap  # noqa: E402
 sys.path.insert(0, str(_bootstrap.RUNTIME_DIR))
 
 from client import AppServerClient  # noqa: E402
+from cx2_runtime import CX2Runtime  # noqa: E402
 from file_write_grants import (  # noqa: E402
     FileWriteGrantRegistry,
     ordinary_workspace_file_mutation,
@@ -36,6 +38,13 @@ class TTY(io.StringIO):
 
     def isatty(self) -> bool:
         return True
+
+
+_ANSI_SGR_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def semantic_terminal_text(value: str) -> str:
+    return _ANSI_SGR_RE.sub("", value)
 
 
 class ApprovalClient:
@@ -191,13 +200,20 @@ class TestCommandIdempotency2014(unittest.TestCase):
         self.runner = StreamingTurnRunner(ApprovalClient(), live=True)
         self.result = TurnRunResult(thread_id="thread", turn_id="turn")
 
-    def event(self, phase: str, *, command: str = "Get-Content x", duration: int = 10) -> dict:
+    def event(
+        self,
+        phase: str,
+        *,
+        item_id: str = "item-1",
+        command: str = "Get-Content x",
+        duration: int = 10,
+    ) -> dict:
         return {
             "method": f"item/{phase}",
             "params": {
                 "threadId": "thread", "turnId": "turn",
                 "item": {
-                    "id": "item-1", "type": "commandExecution", "command": command,
+                    "id": item_id, "type": "commandExecution", "command": command,
                     "cwd": str(ROOT), "status": "completed", "exitCode": 0,
                     "durationMs": duration,
                 },
@@ -205,21 +221,78 @@ class TestCommandIdempotency2014(unittest.TestCase):
         }
 
     def test_identical_started_and_completed_events_are_idempotent(self) -> None:
-        with patch("turn_runner._CX2_TERMINAL", TerminalRenderer(stream=self.out)):
-            started = self.event("started")
-            completed = self.event("completed")
-            for event in (started, started, completed, completed):
-                self.runner._handle_notification(self.result, event)
-        self.assertEqual(len(self.result.command_executions), 1)
-        self.assertEqual(self.out.getvalue().count("> Get-Content x"), 1)
-        self.assertEqual(self.out.getvalue().count("[ok]"), 1)
+        cases = (
+            ("tty-color", TTY, {"TERM": "xterm"}),
+            ("tty-no-color", TTY, {"TERM": "xterm", "NO_COLOR": "1"}),
+            ("tty-static", TTY, {"TERM": "xterm", "CX2_STATIC_UI": "1"}),
+            ("non-tty", io.StringIO, {"TERM": "dumb"}),
+        )
+        for name, stream_factory, environment in cases:
+            with self.subTest(name=name):
+                stream = stream_factory()
+                runner = StreamingTurnRunner(ApprovalClient(), live=True)
+                result = TurnRunResult(thread_id="thread", turn_id="turn")
+                started = self.event("started")
+                completed = self.event("completed")
+                with patch.dict(os.environ, environment, clear=True), patch(
+                    "turn_runner._CX2_TERMINAL", TerminalRenderer(stream=stream)
+                ):
+                    for event in (started, started, completed, completed):
+                        runner._handle_notification(result, event)
+
+                rendered = semantic_terminal_text(stream.getvalue())
+                self.assertEqual(len(result.command_executions), 1)
+                self.assertEqual(list(result.command_execution_index), ["item-1"])
+                self.assertIs(
+                    result.command_execution_index["item-1"],
+                    result.command_executions[0],
+                )
+                self.assertEqual(result.command_event_duplicate_count, 2)
+                self.assertEqual(len(result.command_event_fingerprints), 2)
+                self.assertEqual(rendered.count("> Get-Content x"), 1)
+                self.assertEqual(rendered.count("[ok]"), 1)
+                if name == "non-tty":
+                    self.assertNotIn("\x1b", stream.getvalue())
+
+                runtime = CX2Runtime(live=False)
+                runtime._capture_trace(result)
+                self.assertEqual(len(runtime.last_trace), 1)
+                self.assertEqual(runtime.last_trace[0]["command"], "Get-Content x")
 
     def test_conflicting_same_identity_fails_diagnostically(self) -> None:
-        self.runner._handle_notification(self.result, self.event("completed", duration=10))
-        self.runner._handle_notification(self.result, self.event("completed", duration=11))
+        with patch(
+            "turn_runner._CX2_TERMINAL", TerminalRenderer(stream=io.StringIO())
+        ):
+            self.runner._handle_notification(self.result, self.event("completed", duration=10))
+            self.runner._handle_notification(self.result, self.event("completed", duration=11))
         self.assertEqual(self.result.status, "failed")
         self.assertEqual(self.result.protocol_failure_reason, "COMMAND_EVENT_IDENTITY_CONFLICT")
         self.assertEqual(len(self.result.command_executions), 1)
+
+    def test_different_command_identities_remain_distinct(self) -> None:
+        stream = TTY()
+        with patch.dict(os.environ, {"TERM": "xterm"}, clear=True), patch(
+            "turn_runner._CX2_TERMINAL", TerminalRenderer(stream=stream)
+        ):
+            for item_id, command in (
+                ("item-1", "Get-Content x"),
+                ("item-2", "Get-Content y"),
+            ):
+                self.runner._handle_notification(
+                    self.result,
+                    self.event("started", item_id=item_id, command=command),
+                )
+                self.runner._handle_notification(
+                    self.result,
+                    self.event("completed", item_id=item_id, command=command),
+                )
+
+        rendered = semantic_terminal_text(stream.getvalue())
+        self.assertEqual(len(self.result.command_executions), 2)
+        self.assertEqual(set(self.result.command_execution_index), {"item-1", "item-2"})
+        self.assertEqual(rendered.count("> Get-Content x"), 1)
+        self.assertEqual(rendered.count("> Get-Content y"), 1)
+        self.assertEqual(rendered.count("[ok]"), 2)
 
 
 class TestWindowsGrantHardening2014(unittest.TestCase):

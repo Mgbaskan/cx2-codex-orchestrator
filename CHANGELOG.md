@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [2.0.14] - 2026-08-28
 
 ### Security
 - Added presentation-only escaping for model and command terminal controls while preserving canonical transcript text.
@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Installer and CI
 - Added an offline hashed managed-file manifest, obsolete managed-module reconciliation, bounded truthful cleanup reporting and separation of structural doctor from online account/model diagnostics.
 - Updated GitHub-hosted Windows CI to `actions/checkout@v7`, `actions/setup-python@v7`, and explicit `contents: read` permissions.
+
+### Qualification
+- Validated with 585 deterministic tests, including explicit terminal, approval, Windows path, final-answer authority, large-response, process-cleanup, transcript, installer and isolation gates.
+- Upgraded a disposable installation from the annotated `v2.0.13` source while preserving policy, usage, transcript, session and user-owned sentinel bytes; obsolete managed modules were reconciled and both SQLite databases retained clean integrity checks.
+- An induced offline structural-health failure after managed mutation completed exact source and virtual-environment rollback with all preserved state hashes unchanged. Candidate installation itself requires no authenticated account/model access.
 
 ## [2.0.13] - 2026-08-27
 

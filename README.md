@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
-[![Release](https://img.shields.io/badge/release-v2.0.13-green.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/releases/tag/v2.0.13)
+[![Release](https://img.shields.io/badge/release-v2.0.14-green.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/releases/tag/v2.0.14)
 [![Tests](https://github.com/Mgbaskan/cx2-codex-orchestrator/actions/workflows/test.yml/badge.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/actions/workflows/test.yml)
 
 **CX2** is a Windows-first, policy-driven orchestration and terminal UX layer for OpenAI Codex.
@@ -629,7 +629,8 @@ The installer will:
 5. Compile the native Windows launcher.
 6. Install `cx.exe` under `~/.cx/bin`.
 7. Add `~/.cx/bin` to the user's `PATH` if required.
-8. Verify managed files offline, then run online `cx --doctor` diagnostics separately.
+8. Verify managed files offline, then print guidance for an optional explicit
+   `cx --doctor` authenticated diagnostic.
 
 If an existing CX installation is detected, the installer updates CX-managed
 source/runtime files while preserving user-managed state such as the existing
@@ -865,8 +866,8 @@ No specific optimization or token-saving percentage is guaranteed.
 
 # Known Limitations
 
-CX2 v2.0.13 is the current immutable release. The `dev/2.0.14` candidate retains
-the limitations below unless explicitly hardened in its changelog.
+CX2 v2.0.14 is the current release. The limitations below remain in effect
+unless explicitly narrowed in the changelog.
 
 ### Windows-first
 
@@ -931,7 +932,7 @@ Broad audits on massive codebases with hundreds of files may require custom turn
 Current stable release:
 
 ```text
-CX2 2.0.13
+CX2 2.0.14
 ```
 
 Status:
@@ -939,8 +940,6 @@ Status:
 ```text
 STABLE / FROZEN
 ```
-
-Current development candidate: `CX2 2.0.14` (unreleased; not production).
 
 The public release includes:
 
@@ -950,6 +949,15 @@ The public release includes:
 - session-scoped ordinary workspace file-write approval
 - lightweight terminal Markdown and TTY/non-TTY fallbacks
 - truthful last-known quota freshness and matching context usage
+- Antigravity/VS Code-compatible sticky status ownership across commands,
+  approvals, responses and paging
+- presentation-only terminal control sanitization without altering canonical
+  transcript text
+- idempotent command lifecycle handling and bounded transport/turn state
+- hardened modern and legacy ordinary-file session approvals on Windows
+- live response streaming beyond the separate 16 MiB durable transcript limit
+- lazy near-linear pager wrapping and evidence-based process cleanup reporting
+- offline installer provenance plus rollback-safe managed-file reconciliation
 - improved `/paste`, approval, and error presentation
 - streamed command output diagnostic classification (`outputDelta`)
 - bounded per-command head+tail diagnostic retention (64 KiB head + 448 KiB tail, max 512 KiB)

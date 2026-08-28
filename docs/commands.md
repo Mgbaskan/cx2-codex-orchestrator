@@ -3,6 +3,8 @@
 ## CLI Execution Options
 
 - `cx [prompt]`: Execute one-shot turn with positional prompt text.
+- `cx --version`: Print the CX2 CLI/runtime and Router release identity without initializing the runtime or App Server.
+- `cx --help` / `cx -h`: Print CLI usage without initializing the runtime or App Server.
 - `cx --prompt-file <path>`: Execute one-shot turn loading full prompt from file.
 - `cx --stdin`: Read one-shot turn prompt from standard input (PowerShell / shell pipe).
 - `cx --route <prompt>`: Zero-model local deterministic routing preview for text prompt.

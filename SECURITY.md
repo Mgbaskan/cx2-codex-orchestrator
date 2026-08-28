@@ -26,6 +26,7 @@ When submitting a security report or diagnostic logs:
 
 | Version | Supported |
 |:---|:---:|
+| 2.0.14 | :white_check_mark: |
 | 2.0.13 | :white_check_mark: |
 | 2.0.12 | :white_check_mark: |
 | 2.0.11 | :white_check_mark: |
@@ -36,7 +37,7 @@ When submitting a security report or diagnostic logs:
 ## Security Invariants & Guarantees
 
 - **Fail-Closed Mutation Authorization**: Under Windows Codex 0.144.4 compatibility mode, effective execution operates in `read-only` sandbox with `approval_policy = "on-request"`. Authorization is explicit; user decline is fail-closed and preserves the filesystem.
-- **Scoped Ordinary File-Write Grant**: A user may remember ordinary create/edit/patch approval only for the current runtime instance, App Server thread and canonical workspace root. The in-memory grant cannot authorize unresolved or outside-workspace paths, destructive changes, shell/host execution, privilege escalation, `dangerFullAccess`, or another thread/workspace/runtime/process.
+- **Scoped Ordinary File-Write Grant**: A user may remember ordinary create/edit/patch approval only for the current runtime instance, App Server thread and canonical workspace root. Modern and legacy session decisions are intersected with both the server-advertised options and this locally proven scope. The in-memory grant cannot authorize unresolved or outside-workspace paths, destructive changes, shell/host execution, privilege escalation, `dangerFullAccess`, or another thread/workspace/runtime/process.
 - **Visible Transcript Privacy**: The bounded local plaintext transcript database retains canonical visible assistant response text and approved lifecycle metadata only. Raw reasoning, hidden chain-of-thought, commentary, raw protocol payloads, command output and approval secrets are not copied into it; `/transcript clear` provides confirmed workspace-scoped deletion.
 - **Explicit Bounded Verification Authorization**: When verification commands are blocked by sandbox write restrictions (e.g. `SANDBOX_DENIED`, `WORKSPACE_WRITE_REQUIRED`, `TEMP_CACHE_UNAVAILABLE`), CX2 does not automatically execute host commands. One-shot execution requires explicit affirmative user approval (`[1] Bu kez izin ver`). The exact command string and working directory are presented to the user. User decline is fail-closed.
 - **Model Sandbox Invariant**: Bounded verification authorization applies strictly one-shot to the single command instance approved. The active model turn remains in `:read-only` sandbox throughout execution. `dangerFullAccess` is never used.
@@ -46,7 +47,7 @@ When submitting a security report or diagnostic logs:
 - **Bounded Approval Escalation**: Interactive approval escalation attempts are bounded per turn (maximum 6 prompts per turn) to prevent approval-loop denial of service or terminal starvation.
 - **Evidence-Based Gate Verification**: Verification status (`VERIFIED`) strictly requires observed zero exit codes from legitimate test execution without masking operators. Approvals and prose do not substitute for empirical execution evidence.
 - **Bounded Command Diagnostic Retention**: Command output and diagnostic streams retain a bounded head+tail window (first 64 KiB + most recent 448 KiB, retaining at most 512 KiB per command), empirically exercised with child output streams up to 100 MB per command.
-- **Process-Tree Termination on Timeout**: Command timeouts forcefully terminate the complete process hierarchy to prevent orphaned background processes.
+- **Evidence-Based Process Cleanup**: Command timeouts attempt owned process-tree termination and report success only after the parent, Windows Job Object membership, readers, pipes, handles and working directory are verified released. Any uncertainty remains an explicit cleanup failure rather than a termination claim.
 - **Shared Cache Protection**: CX2's bounded-verification path does not permission-alter or permanently redirect the shared `.codex-agent-cache` directory. Ordinary Codex-managed cache behavior remains unchanged.
 
 ## Residual Risks
@@ -58,4 +59,5 @@ When the user explicitly approves bounded verification execution, the approved c
 - Prompts require active user selection; invalid input defaults to fail-closed decline.
 - One-shot scope: approvals never grant session-wide permission.
 - Turn approval circuit breaker prevents repeated automated prompt attacks.
-- Complete process-tree cleanup on timeout.
+- Evidence-checked owned process-tree cleanup on timeout, with uncertainty
+  reported as failure rather than assumed success.

@@ -60,11 +60,15 @@ class TestInstallerContract(unittest.TestCase):
         self.assertIn("$createdFiles", self.script_content)
 
     def test_doctor_verification_before_commit(self):
-        # Structural health gates rollback; online account/model health is separate.
+        # Structural health gates rollback; authenticated account/model health is
+        # an explicit user action and must not be contacted during installation.
         self.assertIn("& $targetExe --doctor-offline", self.script_content)
         self.assertIn("Installation structural self-check failed", self.script_content)
-        self.assertIn("& $targetExe --doctor", self.script_content)
-        self.assertIn("Online doctor reported account/model unavailability", self.script_content)
+        self.assertNotRegex(
+            self.script_content,
+            r"(?m)^\s*&\s*\$targetExe\s+--doctor\s*$",
+        )
+        self.assertIn("--doctor' explicitly", self.script_content)
 
     def test_managed_manifest_and_obsolete_runtime_reconciliation(self):
         self.assertIn("managed-files.json", self.script_content)

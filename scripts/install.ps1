@@ -312,11 +312,8 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "Installation structural self-check failed: '$targetExe --doctor-offline' returned exit code $LASTEXITCODE."
     }
-    Write-Host "[install] Running online account/model diagnostics..." -ForegroundColor Cyan
-    & $targetExe --doctor
-    if ($LASTEXITCODE -ne 0) {
-        Write-Warning "Online doctor reported account/model unavailability (exit $LASTEXITCODE); structurally verified installation is retained."
-    }
+    Write-Host "[install] Structural verification complete." -ForegroundColor Green
+    Write-Host "[install] Run '$targetExe --doctor' explicitly for authenticated account/model diagnostics."
 
     # ==============================================================================
     # PHASE 6: COMMIT (Clean backups & optionally update PATH)

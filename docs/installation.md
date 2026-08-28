@@ -30,9 +30,9 @@ Run the diagnostics check to verify your setup:
 cx --doctor
 ```
 
-The installer first runs the offline `cx --doctor-offline` managed-file hash
-check. Authenticated account/model diagnostics run separately; temporary online
-unavailability is reported but does not roll back a structurally valid install.
+The installer runs only the offline `cx --doctor-offline` managed-file hash
+check. It does not contact authenticated account/model state. Run `cx --doctor`
+explicitly afterward when online user/runtime diagnostics are desired.
 
 ## Updating Managed Files
 

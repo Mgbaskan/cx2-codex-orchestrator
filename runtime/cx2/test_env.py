@@ -63,7 +63,11 @@ class ExecutionEnvironmentProfile:
             )
 
         if resolved_root.exists():
-            shutil.rmtree(resolved_root, ignore_errors=True)
+            shutil.rmtree(resolved_root)
+        if resolved_root.exists():
+            raise ExecutionEnvironmentError(
+                f"Disposable execution environment remained after cleanup: {resolved_root}"
+            )
 
         self._cleaned = True
 

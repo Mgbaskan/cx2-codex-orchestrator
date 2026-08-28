@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+- Added presentation-only escaping for model and command terminal controls while preserving canonical transcript text.
+- Hardened Windows ordinary-file grants against DOS devices, ADS, device namespaces, ambiguous drive-relative paths, trailing normalization and reparse escapes; modern and legacy session decisions now require locally proven scope and server-advertised token support.
+
+### Reliability and performance
+- Added explicit sticky-row ownership, command lifecycle idempotency, bounded transport/turn collections, incremental paste and Markdown bounds, near-linear lazy pager wrapping, and truthful process cleanup evidence.
+- Added bounded asynchronous transcript flushing, direct command-output indexing, CX-owned `/trace` timing fields, canonical quota-state/freshness projection and stable aggregate-diff offsets.
+- Centralized the 2.0.14 release version and added lightweight `--version`/`--help` paths that avoid runtime and App Server initialization.
+
+### Installer and CI
+- Added an offline hashed managed-file manifest, obsolete managed-module reconciliation, bounded truthful cleanup reporting and separation of structural doctor from online account/model diagnostics.
+- Updated GitHub-hosted Windows CI to `actions/checkout@v7`, `actions/setup-python@v7`, and explicit `contents: read` permissions.
+
 ## [2.0.13] - 2026-08-27
 
 ### Added
@@ -29,6 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Ordinary interactive prompts and `/paste` share one exception boundary, so expected timeouts render cleanly without escaping to the CLI traceback handler.
 - Added explicit `execution.turn_idle_timeout_sec` and `execution.turn_hard_timeout_sec` tier maps while retaining `execution.turn_timeout_sec` as a backward-compatible idle override.
 - Visible transcript retention is bounded to 16 MiB per response, 200 completed responses, 64 MiB of logical retained payload and 30 days. Trace and tool-activity state are also bounded.
+- The 16 MiB transcript boundary no longer interrupts live responses: CX streams all visible output, tracks canonical equality with bounded UTF-8 digest/length state, and marks only durable retention as truncated.
 
 ### Security and Privacy
 - Model turns remain effectively `read-only` on the qualified Windows/Codex 0.144.4 compatibility path; native Windows `workspaceWrite` degradation remains in effect.

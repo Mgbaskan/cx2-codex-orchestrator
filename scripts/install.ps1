@@ -52,6 +52,7 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
 $reqFile = Join-Path $repoRoot "requirements.txt"
 $srcCx = Join-Path $repoRoot "src\cx.py"
 $runtimeSrcDir = Join-Path $repoRoot "runtime\cx2"
+$releaseVersionFile = Join-Path $runtimeSrcDir "release_version.py"
 $launcherCs = Join-Path $repoRoot "launcher\cx-launcher.cs"
 $buildLauncherScript = Join-Path $PSScriptRoot "build-launcher.ps1"
 $policyExample = Join-Path $repoRoot "config\policy.example.json"
@@ -65,6 +66,17 @@ if (-not (Test-Path $srcCx)) {
 if (-not (Test-Path $runtimeSrcDir)) {
     throw "Required runtime directory not found: $runtimeSrcDir"
 }
+if (-not (Test-Path $releaseVersionFile)) {
+    throw "Release version source not found: $releaseVersionFile"
+}
+$releaseVersionMatch = [regex]::Match(
+    (Get-Content -LiteralPath $releaseVersionFile -Raw),
+    'CX2_VERSION\s*=\s*"([^"]+)"'
+)
+if (-not $releaseVersionMatch.Success) {
+    throw "CX2_VERSION could not be read from $releaseVersionFile"
+}
+$releaseVersion = $releaseVersionMatch.Groups[1].Value
 $runtimeFiles = Get-ChildItem -Path $runtimeSrcDir -Filter "*.py"
 if (-not $runtimeFiles -or $runtimeFiles.Count -eq 0) {
     throw "No Python source files found in runtime directory: $runtimeSrcDir"
@@ -104,6 +116,21 @@ $venvExistedBefore = Test-Path $venvDir
 $venvPython = Join-Path $venvDir "Scripts\python.exe"
 $targetExe = Join-Path $resolvedTarget "bin\cx.exe"
 $targetCmd = Join-Path $resolvedTarget "bin\cx.cmd"
+$targetManifest = Join-Path $resolvedTarget "runtime\cx2\managed-files.json"
+$cleanupResidues = [System.Collections.Generic.List[string]]::new()
+
+function Remove-InstallerArtifact {
+    param([Parameter(Mandatory=$true)][string]$LiteralPath)
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        if (-not (Test-Path -LiteralPath $LiteralPath)) { return $true }
+        try {
+            Remove-Item -LiteralPath $LiteralPath -Recurse -Force -ErrorAction Stop
+        } catch {
+            if ($attempt -lt 3) { Start-Sleep -Milliseconds 150 }
+        }
+    }
+    return -not (Test-Path -LiteralPath $LiteralPath)
+}
 
 try {
     # ==============================================================================
@@ -132,8 +159,19 @@ try {
     $managedRelPaths.Add("src\cx.py")
     $managedRelPaths.Add("bin\cx.exe")
     $managedRelPaths.Add("bin\cx.cmd")
+    $managedRelPaths.Add("runtime\cx2\managed-files.json")
     foreach ($rf in $runtimeFiles) {
         $managedRelPaths.Add("runtime\cx2\" + $rf.Name)
+    }
+
+    # Before manifests existed, runtime\cx2\*.py was already an explicitly
+    # installer-managed surface. Include old modules so removal is rollback-safe.
+    $existingRuntimeDir = Join-Path $resolvedTarget "runtime\cx2"
+    if (Test-Path $existingRuntimeDir) {
+        foreach ($existingPy in Get-ChildItem -LiteralPath $existingRuntimeDir -Filter "*.py" -File) {
+            $oldRel = "runtime\cx2\" + $existingPy.Name
+            if (-not $managedRelPaths.Contains($oldRel)) { $managedRelPaths.Add($oldRel) }
+        }
     }
 
     foreach ($relPath in $managedRelPaths) {
@@ -203,6 +241,16 @@ try {
         Copy-Item $rf.FullName $dest -Force
     }
 
+    # Remove only obsolete files from the explicitly managed Python runtime
+    # surface. They were included in the rollback backup above.
+    $expectedRuntimeNames = @($runtimeFiles | ForEach-Object { $_.Name })
+    foreach ($installedPy in Get-ChildItem -LiteralPath (Join-Path $resolvedTarget "runtime\cx2") -Filter "*.py" -File) {
+        if ($expectedRuntimeNames -notcontains $installedPy.Name) {
+            Remove-Item -LiteralPath $installedPy.FullName -Force -ErrorAction Stop
+            Write-Host "[install] Removed obsolete managed module: $($installedPy.Name)"
+        }
+    }
+
     # 4.4 Policy handling
     if (-not $policyExisted) {
         if (-not $createdFiles.Contains($targetPolicy)) {
@@ -231,13 +279,43 @@ try {
     $cmdContent = "@echo off`r`n`"%~dp0..\runtime\venv\Scripts\python.exe`" `"%~dp0..\runtime\cx2\cx2_cli.py`" %*"
     Set-Content -Path $targetCmd -Value $cmdContent -Encoding ASCII
 
+    # 4.7 Offline release provenance for the complete managed source surface.
+    if (-not $backedUpFiles.ContainsKey("runtime\cx2\managed-files.json") -and -not $createdFiles.Contains($targetManifest)) {
+        $createdFiles.Add($targetManifest)
+    }
+    $manifestRelPaths = [System.Collections.Generic.List[string]]::new()
+    $manifestRelPaths.Add("src\cx.py")
+    $manifestRelPaths.Add("bin\cx.exe")
+    $manifestRelPaths.Add("bin\cx.cmd")
+    foreach ($rf in $runtimeFiles) { $manifestRelPaths.Add("runtime\cx2\" + $rf.Name) }
+    $managedHashes = [ordered]@{}
+    foreach ($relPath in ($manifestRelPaths | Sort-Object)) {
+        $managedHashes[$relPath] = (Get-FileHash -LiteralPath (Join-Path $resolvedTarget $relPath) -Algorithm SHA256).Hash.ToLowerInvariant()
+    }
+    $manifest = [ordered]@{
+        schema = 1
+        version = $releaseVersion
+        sha256 = $managedHashes
+    }
+    $manifestJson = $manifest | ConvertTo-Json -Depth 5
+    [System.IO.File]::WriteAllText(
+        $targetManifest,
+        $manifestJson + [Environment]::NewLine,
+        [System.Text.UTF8Encoding]::new($false)
+    )
+
     # ==============================================================================
     # PHASE 5: VERIFY (Doctor self-check)
     # ==============================================================================
-    Write-Host "`n[install] Running self-check (doctor)..." -ForegroundColor Cyan
+    Write-Host "`n[install] Running structural offline self-check..." -ForegroundColor Cyan
+    & $targetExe --doctor-offline
+    if ($LASTEXITCODE -ne 0) {
+        throw "Installation structural self-check failed: '$targetExe --doctor-offline' returned exit code $LASTEXITCODE."
+    }
+    Write-Host "[install] Running online account/model diagnostics..." -ForegroundColor Cyan
     & $targetExe --doctor
     if ($LASTEXITCODE -ne 0) {
-        throw "Installation self-check failed: '$targetExe --doctor' returned exit code $LASTEXITCODE."
+        Write-Warning "Online doctor reported account/model unavailability (exit $LASTEXITCODE); structurally verified installation is retained."
     }
 
     # ==============================================================================
@@ -245,12 +323,16 @@ try {
     # ==============================================================================
     # 6.1 Clean up previous venv backup
     if ($venvBackedUp -and (Test-Path $venvBackupDir)) {
-        Remove-Item -Path $venvBackupDir -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Remove-InstallerArtifact -LiteralPath $venvBackupDir)) {
+            $cleanupResidues.Add($venvBackupDir)
+        }
     }
 
     # 6.2 Clean up rollback workspace
     if (Test-Path $rollbackWorkspace) {
-        Remove-Item -Path $rollbackWorkspace -Recurse -Force -ErrorAction SilentlyContinue
+        if (-not (Remove-InstallerArtifact -LiteralPath $rollbackWorkspace)) {
+            $cleanupResidues.Add($rollbackWorkspace)
+        }
     }
 
     # 6.3 Update User PATH if not suppressed
@@ -270,7 +352,12 @@ try {
         Write-Host "[install] PATH update skipped (-NoPathUpdate specified)." -ForegroundColor Yellow
     }
 
-    Write-Host "`n=== CX2 Installation Complete ===" -ForegroundColor Green
+    if ($cleanupResidues.Count -gt 0) {
+        Write-Warning "Installation succeeded with installer-owned cleanup residue: $($cleanupResidues -join ', ')"
+        Write-Host "`n=== CX2 Installation Complete (cleanup residue reported) ===" -ForegroundColor Yellow
+    } else {
+        Write-Host "`n=== CX2 Installation Complete ===" -ForegroundColor Green
+    }
     Write-Host "You can now run 'cx' in your terminal."
 
 } catch {

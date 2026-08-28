@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from pathlib import PureWindowsPath
 import threading
 import os
+import re
 from typing import Any
 
 
@@ -77,7 +79,9 @@ def _destructive_change(value: Any) -> bool:
                 "delete", "deleted", "remove", "removed", "unlink", "rename"
             }:
                 return True
-            if _destructive_change(item):
+            if key_folded not in {
+                "content", "diff", "patch", "reason", "message", "description",
+            } and _destructive_change(item):
                 return True
     elif isinstance(value, list):
         return any(_destructive_change(item) for item in value)
@@ -85,21 +89,10 @@ def _destructive_change(value: Any) -> bool:
 
 
 def _forbidden_mutation_text(value: Any) -> bool:
-    """Reject command-like or privileged text hidden in nested change data."""
-    forbidden_text = (
-        "git reset --hard",
-        "git clean",
-        "reset --hard",
-        "host execution",
-        "host_execution",
-        "dangerfullaccess",
-        "additionalpermissions",
-    )
+    """Reject structured privilege requests, never ordinary prose/content."""
     if isinstance(value, dict):
         for key, item in value.items():
             key_folded = str(key).casefold()
-            if any(token in key_folded for token in forbidden_text):
-                return True
             if key_folded in {
                 "shell",
                 "hostexecution",
@@ -107,8 +100,9 @@ def _forbidden_mutation_text(value: Any) -> bool:
                 "dangerfullaccess",
                 "additionalpermissions",
             }:
-                return True
-            if "command" in key_folded and item is not None and item is not False and item != "":
+                if item is not None and item is not False and item != "":
+                    return True
+            if key_folded in {"command", "commands", "exec", "execution"} and item:
                 return True
             if key_folded in {"action", "operation", "kind", "type"} and str(item).casefold() in {
                 "shell",
@@ -117,14 +111,47 @@ def _forbidden_mutation_text(value: Any) -> bool:
                 "host",
             }:
                 return True
-            if _forbidden_mutation_text(item):
+            if key_folded not in {
+                "content", "diff", "patch", "reason", "message", "description",
+            } and _forbidden_mutation_text(item):
                 return True
     elif isinstance(value, list):
         return any(_forbidden_mutation_text(item) for item in value)
-    elif isinstance(value, str):
-        folded = value.casefold()
-        return any(token in folded for token in forbidden_text)
     return False
+
+
+_WINDOWS_RESERVED_NAMES = {
+    "CON", "PRN", "AUX", "NUL", "CLOCK$",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
+
+
+def _unambiguous_windows_path(raw: str) -> bool:
+    """Reject Win32 aliases and namespaces before filesystem resolution."""
+
+    if not raw or any(ord(char) < 0x20 for char in raw):
+        return False
+    normalized = raw.replace("/", "\\")
+    if normalized.startswith(("\\\\?\\", "\\\\.\\")):
+        return False
+    if re.match(r"^[A-Za-z]:(?!\\)", normalized):
+        return False
+    drive_absolute = bool(re.match(r"^[A-Za-z]:\\", normalized))
+    colon_source = normalized[2:] if drive_absolute else normalized
+    if ":" in colon_source:
+        return False
+    if any(char in normalized for char in '<>"|?*'):
+        return False
+    for part in PureWindowsPath(normalized).parts:
+        if part in {"\\", "/"} or re.fullmatch(r"[A-Za-z]:\\", part):
+            continue
+        if part.endswith((".", " ")):
+            return False
+        stem = part.split(".", 1)[0].upper()
+        if stem in _WINDOWS_RESERVED_NAMES:
+            return False
+    return True
 
 
 def ordinary_workspace_file_mutation(
@@ -155,8 +182,7 @@ def ordinary_workspace_file_mutation(
     if not paths:
         return False
     for raw in paths:
-        lowered = raw.casefold()
-        if any(token in lowered for token in ("delete", "remove", "unlink", "rename")):
+        if not _unambiguous_windows_path(raw):
             return False
         try:
             path = Path(raw)

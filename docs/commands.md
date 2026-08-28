@@ -9,6 +9,7 @@
 - `cx --route-file <path>`: Zero-model local deterministic routing preview for prompt file.
 - `cx --file <path>`: Attach/mention a reference file context to the turn.
 - `cx --doctor`: Run comprehensive environment and configuration diagnostics.
+- `cx --doctor-offline`: Installer/internal structural hash check; performs no account/model availability check.
 - `cx --stats`: Print local token telemetry statistics.
 - `cx --quota`: Fetch and print a last-known rate-limit/quota snapshot.
 - `cx --session`: Print current workspace session binding.
@@ -30,7 +31,7 @@
 - `/quota`: Explicitly refresh and show the last-known Codex quota snapshot.
 - `/last [--page]`: Show the latest visible assistant response for the current safe thread/workspace context, optionally in the built-in pager.
 - `/transcript clear`: Confirm and delete visible transcript rows for the current workspace.
-- `/trace`: Show the bounded memory-only tool trace for the previous completed turn.
+- `/trace`: Show the bounded memory-only tool trace for the previous completed turn, including available CX-owned protocol/queue/classification/render timings. These timings do not claim visibility into Codex sandbox internals.
 - `/stats`: Show local token telemetry summary.
 - `/doctor`: Run CX2 runtime self-checks.
 - `/clear`: Clear terminal display.

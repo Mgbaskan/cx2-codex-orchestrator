@@ -60,9 +60,20 @@ class TestInstallerContract(unittest.TestCase):
         self.assertIn("$createdFiles", self.script_content)
 
     def test_doctor_verification_before_commit(self):
-        # Must run target cx.exe --doctor and fail if exit code != 0
+        # Structural health gates rollback; online account/model health is separate.
+        self.assertIn("& $targetExe --doctor-offline", self.script_content)
+        self.assertIn("Installation structural self-check failed", self.script_content)
         self.assertIn("& $targetExe --doctor", self.script_content)
-        self.assertIn("Installation self-check failed", self.script_content)
+        self.assertIn("Online doctor reported account/model unavailability", self.script_content)
+
+    def test_managed_manifest_and_obsolete_runtime_reconciliation(self):
+        self.assertIn("managed-files.json", self.script_content)
+        self.assertIn("Removed obsolete managed module", self.script_content)
+        self.assertIn("Get-FileHash", self.script_content)
+
+    def test_success_cleanup_is_bounded_and_truthful(self):
+        self.assertIn("function Remove-InstallerArtifact", self.script_content)
+        self.assertIn("cleanup residue reported", self.script_content)
 
     def test_path_update_is_idempotent(self):
         self.assertIn("-notcontains $binDir", self.script_content)

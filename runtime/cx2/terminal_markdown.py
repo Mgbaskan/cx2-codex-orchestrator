@@ -2,6 +2,21 @@ from __future__ import annotations
 
 import re
 
+from terminal_safety import sanitize_untrusted_text
+
+
+MAX_UNFINISHED_MARKDOWN_BYTES = 64 * 1024
+
+
+def _take_utf8_prefix(value: str, limit: int) -> tuple[str, str]:
+    used = 0
+    for index, char in enumerate(value):
+        size = len(char.encode("utf-8"))
+        if used + size > limit:
+            return value[:index], value[index:]
+        used += size
+    return value, ""
+
 
 def _render_line(raw: str, *, color: bool, in_code: bool) -> tuple[str, bool]:
     line = raw
@@ -32,15 +47,28 @@ class TerminalMarkdownStream:
     def __init__(self) -> None:
         self._buffer = ""
         self._in_code = False
+        self.max_buffer_bytes = MAX_UNFINISHED_MARKDOWN_BYTES
+
+    @property
+    def buffered_bytes(self) -> int:
+        return len(self._buffer.encode("utf-8"))
 
     def feed(self, value: str, *, color: bool = False) -> str:
-        self._buffer += str(value)
+        self._buffer += sanitize_untrusted_text(value)
         rendered: list[str] = []
         while "\n" in self._buffer:
             raw, self._buffer = self._buffer.split("\n", 1)
             raw = raw[:-1] if raw.endswith("\r") else raw
             line, self._in_code = _render_line(raw, color=color, in_code=self._in_code)
             rendered.append(line + "\n")
+        while self.buffered_bytes > self.max_buffer_bytes:
+            prefix, self._buffer = _take_utf8_prefix(
+                self._buffer,
+                self.max_buffer_bytes,
+            )
+            if not prefix:
+                break
+            rendered.append(prefix)
         return "".join(rendered)
 
     def finish(self, *, color: bool = False) -> str:
@@ -58,4 +86,8 @@ def render_markdown(text: str, *, color: bool = False) -> str:
     return stream.feed(str(text), color=color) + stream.finish(color=color)
 
 
-__all__ = ["TerminalMarkdownStream", "render_markdown"]
+__all__ = [
+    "MAX_UNFINISHED_MARKDOWN_BYTES",
+    "TerminalMarkdownStream",
+    "render_markdown",
+]

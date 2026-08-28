@@ -900,7 +900,7 @@ class TestFinalAnswerLifecycle(unittest.TestCase):
             (0.01, event("item/completed", {"item": agent_item("f", "final_answer", "CANONICAL FINAL")})),
             (0.02, event("turn/completed", {"turn": {"id": "turn-1", "status": "completed"}})),
         ]
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as temp_dir:
             path = Path(temp_dir) / "transcript.sqlite3"
             store = TranscriptStore(path)
             result, _client = self.run_integrated(notifications, transcript_store=store)

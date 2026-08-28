@@ -9,7 +9,9 @@ from dataclasses import (
 from pathlib import Path
 
 import hashlib
+import os
 import sys
+import tempfile
 import time
 
 from typing import (
@@ -124,6 +126,20 @@ MAX_FINAL_ANSWER_CANDIDATES: int = 16
 MAX_FINAL_CANDIDATE_ITEM_ID_BYTES: int = 256
 FINAL_CANDIDATE_EVIDENCE_MAX_BYTES: int = 4 * 1024
 MAX_FINAL_RECONCILIATION_RECORDS: int = 64
+MAX_COMMAND_EVENT_IDENTITIES: int = 2048
+MAX_TURN_ITEM_SUMMARIES: int = 4096
+MAX_TURN_COMMANDS: int = 1024
+MAX_CHANGED_FILES: int = 4096
+MAX_TURN_WARNINGS: int = 256
+MAX_TURN_ERRORS: int = 256
+MAX_TURN_ACTIONS: int = 512
+MAX_TURN_UNKNOWN_MESSAGES: int = 256
+MAX_AGENT_ITEM_STATES: int = 4096
+MAX_APPROVAL_REQUEST_IDENTITIES: int = 512
+MAX_CANONICAL_STREAM_RETAINED_BYTES: int = 16 * 1024 * 1024
+CANONICAL_HASH_CHUNK_CHARS: int = 64 * 1024
+MAX_TURN_DIAGNOSTIC_STRING_BYTES: int = 4096
+MAX_ITEM_FIELD_BYTES: int = 64 * 1024
 MAX_BOUNDED_COUNTER: int = (1 << 63) - 1
 
 MAX_INTERACTIVE_APPROVAL_PROMPTS_PER_TURN: int = 6
@@ -136,6 +152,7 @@ class TurnApprovalState:
     declined_identities: set[tuple[str, str, str]] = field(default_factory=set)
     session_accepted_identities: set[tuple[str, str, str]] = field(default_factory=set)
     circuit_warning_rendered: bool = False
+    dropped_identities: int = 0
 
 
 @dataclass
@@ -206,6 +223,58 @@ def _utf8_length_within(text: str, maximum_bytes: int) -> int | None:
         if total > maximum_bytes:
             return None
     return total
+
+
+def _utf8_metrics(text: str) -> tuple[int, str]:
+    """Return exact UTF-8 length/digest without allocating one giant bytes copy."""
+
+    digest = hashlib.sha256()
+    total = 0
+    for offset in range(0, len(text), CANONICAL_HASH_CHUNK_CHARS):
+        encoded = text[offset : offset + CANONICAL_HASH_CHUNK_CHARS].encode("utf-8")
+        digest.update(encoded)
+        total += len(encoded)
+    return total, digest.hexdigest()
+
+
+def _utf8_prefix_digest(text: str, byte_count: int) -> tuple[str, bool]:
+    """Hash exactly ``byte_count`` UTF-8 bytes, if that is a text boundary."""
+
+    digest = hashlib.sha256()
+    remaining = max(0, int(byte_count))
+    if remaining == 0:
+        return digest.hexdigest(), True
+    for offset in range(0, len(text), CANONICAL_HASH_CHUNK_CHARS):
+        encoded = text[offset : offset + CANONICAL_HASH_CHUNK_CHARS].encode("utf-8")
+        if len(encoded) <= remaining:
+            digest.update(encoded)
+            remaining -= len(encoded)
+            if remaining == 0:
+                return digest.hexdigest(), True
+            continue
+        prefix = encoded[:remaining]
+        try:
+            prefix.decode("utf-8")
+        except UnicodeDecodeError:
+            return digest.hexdigest(), False
+        digest.update(prefix)
+        return digest.hexdigest(), True
+    return digest.hexdigest(), False
+
+
+def _char_index_after_utf8_bytes(text: str, byte_count: int) -> int | None:
+    """Find the character boundary after an exact UTF-8 byte prefix."""
+
+    remaining = max(0, int(byte_count))
+    if remaining == 0:
+        return 0
+    for index, character in enumerate(text):
+        remaining -= len(character.encode("utf-8"))
+        if remaining == 0:
+            return index + 1
+        if remaining < 0:
+            return None
+    return None
 
 
 def _bounded_diagnostic_identifier(value: str) -> str:
@@ -391,6 +460,27 @@ class TurnRunResult:
     command_executions: list[dict[str, Any]] = field(
         default_factory=list
     )
+    command_execution_index: dict[str, dict[str, Any]] = field(default_factory=dict)
+    command_event_fingerprints: dict[tuple[str, str], str] = field(default_factory=dict)
+    command_event_duplicate_count: int = 0
+    command_event_conflict_count: int = 0
+    command_started_received: dict[str, float] = field(default_factory=dict)
+    started_items_dropped: int = 0
+    completed_items_dropped: int = 0
+    commands_dropped: int = 0
+    changed_files_dropped: int = 0
+    warnings_dropped: int = 0
+    errors_dropped: int = 0
+    actions_dropped: int = 0
+    unknown_messages_dropped: int = 0
+    diagnostic_bytes_dropped: int = 0
+    agent_text_bytes: int = 0
+    agent_text_digest: str = field(default_factory=lambda: hashlib.sha256().hexdigest())
+    canonical_stream_bytes: int = 0
+    canonical_stream_digest: str = field(default_factory=lambda: hashlib.sha256().hexdigest())
+    canonical_stream_retained_bytes: int = 0
+    canonical_stream_truncated: bool = False
+    canonical_stream_line_count: int = 0
 
     event_sequence: int = 0
     last_mutation_sequence: int = 0
@@ -738,11 +828,12 @@ def safe_item_summary(
     ):
 
         if key in item:
-            result[
-                key
-            ] = item[
-                key
-            ]
+            value = item[key]
+            result[key] = (
+                _bounded_utf8_prefix(value, MAX_ITEM_FIELD_BYTES)[0]
+                if isinstance(value, str)
+                else value
+            )
 
     # Bounded output snippet for error / status diagnosis
     if result.get("type") == "commandExecution":
@@ -783,9 +874,10 @@ def safe_item_summary(
                 value,
                 str,
             ):
-                result[
-                    key
-                ] = value
+                result[key] = _bounded_utf8_prefix(
+                    value,
+                    MAX_ITEM_FIELD_BYTES,
+                )[0]
 
     # Keep only change count for file-change items.
     if (
@@ -1330,6 +1422,61 @@ class StreamingTurnRunner:
     ) -> tuple[str, str, str]:
         return (result.thread_id, result.turn_id, item_id)
 
+    @staticmethod
+    def _command_event_fingerprint(method: str, item: dict[str, Any]) -> str:
+        digest = hashlib.sha256()
+        digest.update(method.encode("utf-8"))
+        for key in (
+            "id", "type", "command", "cwd", "status", "exitCode",
+            "durationMs", "interrupted",
+        ):
+            digest.update(b"\0")
+            digest.update(key.encode("ascii"))
+            digest.update(b"=")
+            digest.update(repr(item.get(key)).encode("utf-8", errors="replace"))
+        return digest.hexdigest()
+
+    def _accept_command_lifecycle_event(
+        self,
+        result: TurnRunResult,
+        method: str,
+        item: dict[str, Any],
+    ) -> bool:
+        item_id = item.get("id")
+        if item.get("type") != "commandExecution" or not isinstance(item_id, str) or not item_id:
+            return True
+        key = (method, item_id)
+        fingerprint = self._command_event_fingerprint(method, item)
+        previous = result.command_event_fingerprints.get(key)
+        if previous is not None:
+            if previous == fingerprint:
+                result.command_event_duplicate_count = _increment_bounded_counter(
+                    result.command_event_duplicate_count
+                )
+                return False
+            result.command_event_conflict_count = _increment_bounded_counter(
+                result.command_event_conflict_count
+            )
+            result.status = "failed"
+            result.protocol_failure_reason = "COMMAND_EVENT_IDENTITY_CONFLICT"
+            result.error = {
+                "code": "COMMAND_EVENT_IDENTITY_CONFLICT",
+                "message": "Conflicting command lifecycle payload for one item identity.",
+                "item_id": self._diagnostic_item_id(item_id),
+                "method": method,
+            }
+            return False
+        if len(result.command_event_fingerprints) >= MAX_COMMAND_EVENT_IDENTITIES:
+            result.status = "failed"
+            result.protocol_failure_reason = "COMMAND_EVENT_IDENTITY_LIMIT"
+            result.error = {
+                "code": "COMMAND_EVENT_IDENTITY_LIMIT",
+                "message": "Command lifecycle identity capacity exceeded.",
+            }
+            return False
+        result.command_event_fingerprints[key] = fingerprint
+        return True
+
     def _agent_item_state(
         self,
         result: TurnRunResult,
@@ -1341,6 +1488,220 @@ class StreamingTurnRunner:
             state = AgentMessageItemState()
             result.agent_message_items[key] = state
         return state
+
+    @staticmethod
+    def _fail_capacity(result: TurnRunResult, reason: str) -> None:
+        result.status = "failed"
+        result.protocol_failure_reason = reason
+        result.error = {
+            "code": reason,
+            "message": "A bounded turn-state capacity was exceeded.",
+        }
+
+    @staticmethod
+    def _response_spill_directory() -> Path:
+        explicit_test_root = os.environ.get("CX2_TEST_TEMP_ROOT")
+        if explicit_test_root:
+            root = Path(explicit_test_root)
+        elif os.name == "nt":
+            local_app_data = os.environ.get("LOCALAPPDATA")
+            if not local_app_data:
+                raise OSError("LOCALAPPDATA is required for bounded response spill")
+            root = Path(local_app_data) / "Temp"
+        else:
+            root = Path(os.environ.get("XDG_RUNTIME_DIR") or "/tmp")
+        resolved = root.resolve(strict=True)
+        if not resolved.is_dir():
+            raise OSError("response spill root is not a directory")
+        return resolved
+
+    @staticmethod
+    def _close_canonical_spill(result: TurnRunResult) -> None:
+        spill = getattr(result, "_canonical_stream_spill", None)
+        if spill is not None:
+            try:
+                spill.close()
+            finally:
+                delattr(result, "_canonical_stream_spill")
+
+    @classmethod
+    def _release_canonical_stream(cls, result: TurnRunResult) -> None:
+        cls._close_canonical_spill(result)
+        if hasattr(result, "_canonical_stream_hasher"):
+            delattr(result, "_canonical_stream_hasher")
+
+    def _ensure_canonical_spill(self, result: TurnRunResult) -> Any:
+        spill = getattr(result, "_canonical_stream_spill", None)
+        if spill is not None:
+            return spill
+        spill = tempfile.TemporaryFile(
+            mode="w+b",
+            prefix="cx2-response-",
+            dir=self._response_spill_directory(),
+        )
+        for offset in range(0, len(result.agent_text), CANONICAL_HASH_CHUNK_CHARS):
+            spill.write(
+                result.agent_text[offset : offset + CANONICAL_HASH_CHUNK_CHARS].encode(
+                    "utf-8"
+                )
+            )
+        result._canonical_stream_spill = spill
+        return spill
+
+    def _append_canonical_agent_text(
+        self,
+        result: TurnRunResult,
+        value: str,
+    ) -> bool:
+        if not value:
+            return True
+        hasher = getattr(result, "_canonical_stream_hasher", None)
+        if hasher is None:
+            hasher = hashlib.sha256()
+            result._canonical_stream_hasher = hasher
+
+        value_bytes = 0
+        for offset in range(0, len(value), CANONICAL_HASH_CHUNK_CHARS):
+            encoded = value[offset : offset + CANONICAL_HASH_CHUNK_CHARS].encode("utf-8")
+            value_bytes += len(encoded)
+
+        spill = getattr(result, "_canonical_stream_spill", None)
+        if (
+            spill is None
+            and result.canonical_stream_bytes + value_bytes
+            > MAX_CANONICAL_STREAM_RETAINED_BYTES
+        ):
+            try:
+                spill = self._ensure_canonical_spill(result)
+            except OSError as exc:
+                self._fail_capacity(result, "CANONICAL_STATE_IO_FAILURE")
+                result.error = {
+                    "code": "CANONICAL_STATE_IO_FAILURE",
+                    "message": f"Bounded canonical spill failed: {type(exc).__name__}",
+                }
+                return False
+
+        retained_capacity = max(
+            0,
+            MAX_CANONICAL_STREAM_RETAINED_BYTES
+            - result.canonical_stream_retained_bytes,
+        )
+        retained_parts: list[str] = []
+        try:
+            for offset in range(0, len(value), CANONICAL_HASH_CHUNK_CHARS):
+                encoded = value[
+                    offset : offset + CANONICAL_HASH_CHUNK_CHARS
+                ].encode("utf-8")
+                hasher.update(encoded)
+                if spill is not None:
+                    spill.write(encoded)
+                if retained_capacity:
+                    reaches_limit = len(encoded) >= retained_capacity
+                    bounded = encoded[:retained_capacity]
+                    while bounded:
+                        try:
+                            retained_parts.append(bounded.decode("utf-8"))
+                            retained_capacity -= len(bounded)
+                            break
+                        except UnicodeDecodeError as exc:
+                            bounded = bounded[:exc.start]
+                    if reaches_limit:
+                        retained_capacity = 0
+        except OSError as exc:
+            self._fail_capacity(result, "CANONICAL_STATE_IO_FAILURE")
+            result.error = {
+                "code": "CANONICAL_STATE_IO_FAILURE",
+                "message": f"Bounded canonical spill failed: {type(exc).__name__}",
+            }
+            return False
+
+        retained = "".join(retained_parts)
+        result.agent_text += retained
+        retained_bytes = sum(len(part.encode("utf-8")) for part in retained_parts)
+        result.canonical_stream_retained_bytes += retained_bytes
+        result.canonical_stream_bytes += value_bytes
+        result.canonical_stream_digest = hasher.copy().hexdigest()
+        result.canonical_stream_truncated = (
+            result.canonical_stream_bytes > result.canonical_stream_retained_bytes
+        )
+        result.canonical_stream_line_count += value.count("\n")
+        result.agent_text_bytes = result.canonical_stream_bytes
+        result.agent_text_digest = result.canonical_stream_digest
+        return True
+
+    @staticmethod
+    def _append_changed_file(result: TurnRunResult, value: str) -> None:
+        if _utf8_length_within(value, MAX_TURN_DIAGNOSTIC_STRING_BYTES) is None:
+            result.changed_files_dropped = _increment_bounded_counter(
+                result.changed_files_dropped
+            )
+            StreamingTurnRunner._fail_capacity(result, "CHANGED_FILE_PATH_LIMIT")
+            return
+        folded = value.casefold()
+        if any(existing.casefold() == folded for existing in result.changed_files):
+            return
+        if len(result.changed_files) >= MAX_CHANGED_FILES:
+            result.changed_files_dropped = _increment_bounded_counter(
+                result.changed_files_dropped
+            )
+            StreamingTurnRunner._fail_capacity(result, "CHANGED_FILE_LIMIT")
+            return
+        result.changed_files.append(value)
+
+    @staticmethod
+    def _append_diagnostic(
+        result: TurnRunResult,
+        collection: str,
+        counter: str,
+        limit: int,
+        value: Any,
+        *,
+        critical: bool = False,
+    ) -> bool:
+        target = getattr(result, collection)
+        if len(target) >= limit:
+            setattr(
+                result,
+                counter,
+                _increment_bounded_counter(getattr(result, counter)),
+            )
+            if critical:
+                StreamingTurnRunner._fail_capacity(
+                    result,
+                    collection.upper() + "_LIMIT",
+                )
+            return False
+
+        dropped_bytes = 0
+
+        def bounded(raw: Any, depth: int = 0) -> Any:
+            nonlocal dropped_bytes
+            if isinstance(raw, str):
+                prefix, retained = _bounded_utf8_prefix(
+                    raw,
+                    MAX_TURN_DIAGNOSTIC_STRING_BYTES,
+                )
+                actual = len(raw.encode("utf-8"))
+                dropped_bytes += max(0, actual - retained)
+                return prefix
+            if depth >= 3:
+                return repr(type(raw).__name__)
+            if isinstance(raw, dict):
+                return {
+                    str(key)[:128]: bounded(item, depth + 1)
+                    for key, item in list(raw.items())[:32]
+                }
+            if isinstance(raw, (list, tuple)):
+                return [bounded(item, depth + 1) for item in raw[:32]]
+            return raw
+
+        target.append(bounded(value))
+        if dropped_bytes:
+            result.diagnostic_bytes_dropped = _increment_bounded_counter(
+                result.diagnostic_bytes_dropped,
+                dropped_bytes,
+            )
+        return True
 
     @staticmethod
     def _diagnostic_item_id(item_id: str | None) -> str | None:
@@ -1366,31 +1727,105 @@ class StreamingTurnRunner:
         }.get(source or "", 99)
 
     @staticmethod
+    def _resident_canonical_state(
+        result: TurnRunResult,
+    ) -> tuple[int, str, str, bool]:
+        if result.authoritative_final_evidence:
+            return (
+                result.agent_text_bytes,
+                result.agent_text_digest,
+                result.agent_text,
+                True,
+            )
+        return (
+            result.canonical_stream_bytes,
+            result.canonical_stream_digest,
+            result.agent_text,
+            not result.canonical_stream_truncated,
+        )
+
+    @staticmethod
+    def _canonical_prefix_digest(
+        result: TurnRunResult,
+        byte_count: int,
+        *,
+        resident_text: str,
+        resident_complete: bool,
+    ) -> tuple[str, bool]:
+        if resident_complete or byte_count <= result.canonical_stream_retained_bytes:
+            return _utf8_prefix_digest(resident_text, byte_count)
+
+        spill = getattr(result, "_canonical_stream_spill", None)
+        if spill is None:
+            return hashlib.sha256().hexdigest(), False
+        digest = hashlib.sha256()
+        remaining = max(0, int(byte_count))
+        try:
+            current = spill.tell()
+            spill.flush()
+            spill.seek(0)
+            while remaining:
+                chunk = spill.read(min(64 * 1024, remaining))
+                if not chunk:
+                    return digest.hexdigest(), False
+                digest.update(chunk)
+                remaining -= len(chunk)
+            return digest.hexdigest(), True
+        finally:
+            spill.seek(current)
+
+    def _reconciliation_relationship(
+        self,
+        result: TurnRunResult,
+        authoritative: str,
+        authoritative_bytes: int,
+        authoritative_digest: str,
+    ) -> tuple[str, int]:
+        streamed_bytes, streamed_digest, resident_text, resident_complete = (
+            self._resident_canonical_state(result)
+        )
+        if (
+            streamed_bytes == authoritative_bytes
+            and streamed_digest == authoritative_digest
+        ):
+            return "identical", streamed_bytes
+        if streamed_bytes == 0:
+            return "missing_streamed", streamed_bytes
+        if authoritative_bytes > streamed_bytes:
+            prefix_digest, exact = _utf8_prefix_digest(
+                authoritative,
+                streamed_bytes,
+            )
+            if exact and prefix_digest == streamed_digest:
+                return "streamed_prefix", streamed_bytes
+            return "divergent", streamed_bytes
+        if streamed_bytes > authoritative_bytes:
+            prefix_digest, exact = self._canonical_prefix_digest(
+                result,
+                authoritative_bytes,
+                resident_text=resident_text,
+                resident_complete=resident_complete,
+            )
+            if exact and prefix_digest == authoritative_digest:
+                return "completed_prefix", streamed_bytes
+        return "divergent", streamed_bytes
+
+    @staticmethod
     def _record_reconciliation(
         result: TurnRunResult,
         *,
         item_id: str | None,
         source: str,
-        streamed: str,
-        authoritative: str,
+        relationship: str,
+        streamed_bytes: int,
+        authoritative_bytes: int,
     ) -> tuple[str, dict[str, Any]]:
-        if streamed == authoritative:
-            relationship = "identical"
-        elif not streamed:
-            relationship = "missing_streamed"
-        elif authoritative.startswith(streamed):
-            relationship = "streamed_prefix"
-        elif streamed.startswith(authoritative):
-            relationship = "completed_prefix"
-        else:
-            relationship = "divergent"
-
         record = {
             "item_id": StreamingTurnRunner._diagnostic_item_id(item_id),
             "source": source,
             "relationship": relationship,
-            "streamed_bytes": len(streamed.encode("utf-8")),
-            "authoritative_bytes": len(authoritative.encode("utf-8")),
+            "streamed_bytes": streamed_bytes,
+            "authoritative_bytes": authoritative_bytes,
         }
         if len(result.final_reconciliations) < MAX_FINAL_RECONCILIATION_RECORDS:
             result.final_reconciliations.append(record)
@@ -1403,16 +1838,32 @@ class StreamingTurnRunner:
         return relationship, record
 
     def _render_canonical_delta(self, delta: str) -> None:
+        if self.live and delta:
+            _CX2_TERMINAL.agent_delta(delta)
         if delta and self._transcript_sink is not None:
             try:
                 self._transcript_sink.append(delta)
             except Exception as exc:
                 self._disable_transcript_sink(exc)
-        if self.live and delta:
-            _CX2_TERMINAL.agent_delta(delta)
+
+    def _render_authoritative_suffix(self, text: str, prefix_bytes: int) -> None:
+        start = _char_index_after_utf8_bytes(text, prefix_bytes)
+        if start is None:
+            _CX2_TERMINAL.response_reconciled(text)
+            return
+        for offset in range(start, len(text), CANONICAL_HASH_CHUNK_CHARS):
+            self._render_canonical_delta(
+                text[offset : offset + CANONICAL_HASH_CHUNK_CHARS]
+            )
 
     def _disable_transcript_sink(self, exc: BaseException) -> None:
+        sink = self._transcript_sink
         self._transcript_sink = None
+        if sink is not None:
+            try:
+                sink.abort()
+            except Exception:
+                pass
         if self._transcript_warning_emitted:
             return
         self._transcript_warning_emitted = True
@@ -1432,6 +1883,7 @@ class StreamingTurnRunner:
         sink = self._transcript_sink
         self._transcript_sink = None
         if sink is None:
+            self._release_canonical_stream(result)
             return
         try:
             sink.finalize(
@@ -1455,6 +1907,8 @@ class StreamingTurnRunner:
                     print(f"[cx] Uyarı: {message}", file=sys.stderr)
         except Exception as exc:
             self._disable_transcript_sink(exc)
+        finally:
+            self._release_canonical_stream(result)
 
     @staticmethod
     def _discard_agent_item_state(
@@ -1491,8 +1945,11 @@ class StreamingTurnRunner:
         result.final_ambiguity_reason = reason
         result.protocol_failure_reason = reason
         result.agent_text = ""
+        result.agent_text_bytes = 0
+        result.agent_text_digest = hashlib.sha256().hexdigest()
         result.canonical_final_item_id = None
         result.canonical_final_source = None
+        self._release_canonical_stream(result)
 
         for state in result.agent_message_items.values():
             if state.authoritative_digest is None:
@@ -1508,7 +1965,9 @@ class StreamingTurnRunner:
             )[0]
 
         if evidence not in result.warnings:
-            result.warnings.append(evidence)
+            self._append_diagnostic(
+                result, "warnings", "warnings_dropped", MAX_TURN_WARNINGS, evidence
+            )
             if self.live:
                 _CX2_TERMINAL.response_ambiguity(reason)
 
@@ -1612,7 +2071,13 @@ class StreamingTurnRunner:
         source: str,
         item_id: str | None = None,
     ) -> None:
-        streamed = result.agent_text
+        authoritative_bytes, digest = _utf8_metrics(text)
+        relationship, compared_bytes = self._reconciliation_relationship(
+            result,
+            text,
+            authoritative_bytes,
+            digest,
+        )
 
         state: AgentMessageItemState | None = None
         if item_id is not None:
@@ -1627,8 +2092,9 @@ class StreamingTurnRunner:
             result,
             item_id=item_id,
             source=source,
-            streamed=streamed,
-            authoritative=text,
+            relationship=relationship,
+            streamed_bytes=compared_bytes,
+            authoritative_bytes=authoritative_bytes,
         )
 
         incoming_rank = self._source_rank(source)
@@ -1648,7 +2114,6 @@ class StreamingTurnRunner:
                 state.buffered_text = ""
                 state.buffered_bytes = 0
 
-            digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
             current_item_rank = self._source_rank(state.authoritative_source)
 
             if state.authoritative_digest is not None:
@@ -1712,23 +2177,26 @@ class StreamingTurnRunner:
 
         if self.live:
             if relationship in {"streamed_prefix", "missing_streamed"}:
-                self._render_canonical_delta(text[len(streamed):])
+                self._render_authoritative_suffix(text, compared_bytes)
             elif relationship in {"completed_prefix", "divergent"}:
                 _CX2_TERMINAL.response_reconciled(text)
             elif relationship == "identical" and not text:
                 _CX2_TERMINAL.confirm_empty_response()
 
         result.agent_text = text
+        result.agent_text_bytes = authoritative_bytes
+        result.agent_text_digest = digest
         result.canonical_final_source = source
         if item_id:
             result.canonical_final_item_id = item_id
+        self._release_canonical_stream(result)
 
     def _set_raw_authoritative_final(
         self,
         result: TurnRunResult,
         text: str,
     ) -> None:
-        digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        authoritative_bytes, digest = _utf8_metrics(text)
         bounded_text = _bounded_utf8_prefix(
             text,
             FINAL_CANDIDATE_EVIDENCE_MAX_BYTES,
@@ -1745,12 +2213,19 @@ class StreamingTurnRunner:
             )
             return
 
+        relationship, compared_bytes = self._reconciliation_relationship(
+            result,
+            text,
+            authoritative_bytes,
+            digest,
+        )
         relationship, record = self._record_reconciliation(
             result,
             item_id=None,
             source="rawResponseItem/completed",
-            streamed=result.agent_text,
-            authoritative=text,
+            relationship=relationship,
+            streamed_bytes=compared_bytes,
+            authoritative_bytes=authoritative_bytes,
         )
 
         known_digests = {
@@ -1818,6 +2293,13 @@ class StreamingTurnRunner:
             if state is None:
                 return None
         else:
+            key = self._agent_item_key(result, item_id)
+            if (
+                key not in result.agent_message_items
+                and len(result.agent_message_items) >= MAX_AGENT_ITEM_STATES
+            ):
+                self._fail_capacity(result, "AGENT_ITEM_STATE_LIMIT")
+                return None
             state = self._agent_item_state(result, item_id)
 
         if state.unresolved_prestart:
@@ -1861,8 +2343,8 @@ class StreamingTurnRunner:
             result.confirmed_streamed_final = True
             if result.canonical_final_item_id in {None, item_id}:
                 result.canonical_final_item_id = item_id
-                result.agent_text += state.buffered_text
                 self._render_canonical_delta(state.buffered_text)
+                self._append_canonical_agent_text(result, state.buffered_text)
 
         if classification_resolved:
             state.buffered_text = ""
@@ -1882,9 +2364,13 @@ class StreamingTurnRunner:
         result.overflow_event_count += 1
         if not result.unresolved_overflow_warning_emitted:
             result.unresolved_overflow_warning_emitted = True
-            result.warnings.append(
+            self._append_diagnostic(
+                result,
+                "warnings",
+                "warnings_dropped",
+                MAX_TURN_WARNINGS,
                 "Unresolved agentMessage candidate overflow bounds were exceeded; "
-                "additional pre-start text was discarded from canonical consideration."
+                "additional pre-start text was discarded from canonical consideration.",
             )
 
     def _buffer_unresolved_delta(
@@ -1973,8 +2459,8 @@ class StreamingTurnRunner:
             result.confirmed_streamed_final = True
             if result.canonical_final_item_id in {None, item_id}:
                 result.canonical_final_item_id = item_id
-                result.agent_text += delta
                 self._render_canonical_delta(delta)
+                self._append_canonical_agent_text(result, delta)
             return
 
         if state.item_type == "agentMessage" and state.phase == "commentary":
@@ -2474,6 +2960,11 @@ class StreamingTurnRunner:
             item_type = item.get("type")
             if method == "item/started" and item_type == "commandExecution":
                 if isinstance(item_id, str) and item_id:
+                    if item_id not in active_work_items and len(active_work_items) >= MAX_TURN_COMMANDS:
+                        StreamingTurnRunner._fail_capacity(
+                            result, "ACTIVE_WORK_ITEM_LIMIT"
+                        )
+                        return None
                     active_work_items.add(item_id)
             elif method == "item/completed":
                 if isinstance(item_id, str) and item_id:
@@ -2544,6 +3035,10 @@ class StreamingTurnRunner:
         active_work_items: set[str],
     ) -> list[str]:
         activities: list[str] = []
+        transport_failure = getattr(self.client, "transport_failure", None)
+        if transport_failure:
+            self._fail_capacity(result, "TRANSPORT_CAPACITY_FAILURE")
+            raise AppServerProtocolError(str(transport_failure)[:512])
         # Server requests are handled first because approval may pause the turn.
         for request in self.client.drain_server_requests():
             activity = self._server_request_activity(result, request)
@@ -2563,7 +3058,14 @@ class StreamingTurnRunner:
 
         unknown = self.client.drain_unknown()
         if unknown:
-            result.unknown_messages.extend(unknown)
+            remaining = max(0, MAX_TURN_UNKNOWN_MESSAGES - len(result.unknown_messages))
+            result.unknown_messages.extend(unknown[:remaining])
+            dropped = len(unknown) - remaining
+            if dropped:
+                result.unknown_messages_dropped = _increment_bounded_counter(
+                    result.unknown_messages_dropped,
+                    dropped,
+                )
         return activities
 
     def _is_matching_late_final_notification(
@@ -2677,7 +3179,9 @@ class StreamingTurnRunner:
                 f"final reconciliation failed ({reason})."
             )
             if evidence not in result.warnings:
-                result.warnings.append(evidence)
+                self._append_diagnostic(
+                    result, "warnings", "warnings_dropped", MAX_TURN_WARNINGS, evidence
+                )
 
     def _request_interrupt_once(self, result: TurnRunResult) -> bool:
         if result.interrupt_requested:
@@ -2893,28 +3397,45 @@ class StreamingTurnRunner:
             raw_record["bounded_host_execution"] = True
 
             result.command_output[cmd_str] = bounded_res.classification_text
-            result.server_request_actions.append({
-                "method": "bounded_verification_exec",
-                "action": f"accept:{bounded_res.exit_code}",
-            })
+            self._append_diagnostic(
+                result, "server_request_actions", "actions_dropped", MAX_TURN_ACTIONS,
+                {"method": "bounded_verification_exec", "action": f"accept:{bounded_res.exit_code}"},
+                critical=True,
+            )
         else:
             result.approval_state.declined_identities.add(cmd_identity)
-            result.server_request_actions.append({
-                "method": "bounded_verification_exec",
-                "action": "decline",
-            })
+            self._append_diagnostic(
+                result, "server_request_actions", "actions_dropped", MAX_TURN_ACTIONS,
+                {"method": "bounded_verification_exec", "action": "decline"},
+                critical=True,
+            )
 
     # ---------------------------------------------------------
     # Server -> client requests
     # ---------------------------------------------------------
 
-    def _file_grant_eligible(self, params: dict[str, Any]) -> bool:
+    def _file_session_scope_eligible(
+        self,
+        result: TurnRunResult,
+        params: dict[str, Any],
+    ) -> bool:
         if self.file_write_grants is None or not isinstance(self.current_cwd, Path):
+            return False
+        if str(getattr(self, "_active_thread_id", "")) != result.thread_id:
             return False
         if not ordinary_workspace_file_mutation(params, workspace_root=self.current_cwd):
             return False
+        return True
+
+    def _file_grant_eligible(
+        self,
+        result: TurnRunResult,
+        params: dict[str, Any],
+    ) -> bool:
+        if not self._file_session_scope_eligible(result, params):
+            return False
         return self.file_write_grants.has(
-            thread_id=str(getattr(self, "_active_thread_id", "")),
+            thread_id=result.thread_id,
             workspace_root=self.current_cwd,
         )
 
@@ -2925,15 +3446,26 @@ class StreamingTurnRunner:
         cwd: Path,
         params: dict[str, Any],
         decision: str,
-    ) -> None:
+    ) -> bool:
         if not isinstance(cwd, Path):
-            return
+            return False
         if (
             self.file_write_grants is not None
             and decision in {"acceptForSession", "approved_for_session"}
             and ordinary_workspace_file_mutation(params, workspace_root=cwd)
         ):
-            self.file_write_grants.grant(thread_id=thread_id, workspace_root=cwd)
+            try:
+                self.file_write_grants.grant(
+                    thread_id=thread_id,
+                    workspace_root=cwd,
+                )
+                return self.file_write_grants.has(
+                    thread_id=thread_id,
+                    workspace_root=cwd,
+                )
+            except Exception:
+                return False
+        return decision not in {"acceptForSession", "approved_for_session"}
 
     # CX2_INTERACTIVE_APPROVAL_DISPATCH_V1
     def _handle_server_request(
@@ -2964,14 +3496,13 @@ class StreamingTurnRunner:
             method,
             str,
         ):
-            result.server_request_actions.append(
-                {
-                    "method":
-                        None,
-
-                    "action":
-                        "error",
-                }
+            self._append_diagnostic(
+                result,
+                "server_request_actions",
+                "actions_dropped",
+                MAX_TURN_ACTIONS,
+                {"method": None, "action": "error"},
+                critical=True,
             )
 
             self.client.respond_error(
@@ -2989,15 +3520,31 @@ class StreamingTurnRunner:
             action: str,
         ) -> None:
 
-            result.server_request_actions.append(
-                {
-                    "method":
-                        method,
-
-                    "action":
-                        action,
-                }
+            self._append_diagnostic(
+                result,
+                "server_request_actions",
+                "actions_dropped",
+                MAX_TURN_ACTIONS,
+                {"method": method, "action": action},
+                critical=True,
             )
+
+        if (
+            request_id is not None
+            and request_id not in approval_state.request_id_responses
+            and len(approval_state.request_id_responses) >= MAX_APPROVAL_REQUEST_IDENTITIES
+        ):
+            approval_state.dropped_identities = _increment_bounded_counter(
+                approval_state.dropped_identities
+            )
+            self._fail_capacity(result, "APPROVAL_REQUEST_IDENTITY_LIMIT")
+            self.client.respond_error(
+                request_id,
+                -32000,
+                "Approval request identity capacity exceeded.",
+            )
+            record("capacity-error")
+            return
 
         # -----------------------------------------------------
         # Case A: Same request ID replay idempotency
@@ -3041,9 +3588,19 @@ class StreamingTurnRunner:
                 approval_state.request_id_responses[request_id] = payload
             if identity is not None:
                 if decision in ("decline", "denied", "cancel", "abort"):
-                    approval_state.declined_identities.add(identity)
+                    target = approval_state.declined_identities
                 elif decision in ("acceptForSession", "approved_for_session"):
-                    approval_state.session_accepted_identities.add(identity)
+                    target = approval_state.session_accepted_identities
+                else:
+                    target = None
+                if target is not None:
+                    if identity in target or len(target) < MAX_APPROVAL_REQUEST_IDENTITIES:
+                        target.add(identity)
+                    else:
+                        approval_state.dropped_identities = _increment_bounded_counter(
+                            approval_state.dropped_identities
+                        )
+                        self._fail_capacity(result, "APPROVAL_IDENTITY_LIMIT")
             record(decision)
 
         # -----------------------------------------------------
@@ -3250,19 +3807,87 @@ class StreamingTurnRunner:
                 "Not included: outside paths, deletes, shell/host execution, privileged permissions, or dangerFullAccess.",
             ])
 
+            known_file_decisions = {
+                "accept", "acceptForSession", "decline", "cancel",
+            }
+            raw_available = params.get("availableDecisions")
+            if isinstance(raw_available, list):
+                supported_decisions = [
+                    value for value in raw_available
+                    if isinstance(value, str) and value in known_file_decisions
+                ]
+            else:
+                supported_decisions = [
+                    "accept", "acceptForSession", "decline", "cancel",
+                ]
+
+            request_cwd = getattr(self, "current_cwd", None)
+            ordinary_request = (
+                isinstance(request_cwd, Path)
+                and ordinary_workspace_file_mutation(
+                    params,
+                    workspace_root=request_cwd,
+                )
+            )
+            session_scope_eligible = self._file_session_scope_eligible(
+                result,
+                params,
+            )
+            cx_allowed = (
+                {"accept", "decline", "cancel"}
+                if ordinary_request
+                else {"decline", "cancel"}
+            )
+            if session_scope_eligible:
+                cx_allowed.add("acceptForSession")
             decisions = [
-                "accept",
-                "acceptForSession",
-                "decline",
-                "cancel",
+                value for value in supported_decisions if value in cx_allowed
             ]
 
-            if self._file_grant_eligible(params):
-                granted_decision = (
-                    "acceptForSession"
-                    if "acceptForSession" in decisions
-                    else "accept"
+            # An ineligible payload has not established an ordinary workspace
+            # mutation boundary.  It may only be denied, regardless of what
+            # the server advertised or a presentation callback returns.
+            if not ordinary_request:
+                deny_decisions = [
+                    value for value in decisions if value in {"decline", "cancel"}
+                ]
+                if not deny_decisions:
+                    self.client.respond_error(
+                        request_id,
+                        -32000,
+                        "No safe deny decision available for file approval.",
+                    )
+                    record("deny-error")
+                    return
+                decision = safe_prompt(
+                    title="File changes rejected by safety boundary",
+                    details=details,
+                    decisions=deny_decisions,
+                    default="decline",
                 )
+                if decision not in deny_decisions:
+                    decision = (
+                        "decline" if "decline" in deny_decisions else deny_decisions[0]
+                    )
+                send_decision(decision)
+                return
+
+            if self._file_grant_eligible(result, params):
+                granted_decision = next(
+                    (
+                        value for value in ("acceptForSession", "accept", "decline", "cancel")
+                        if value in decisions
+                    ),
+                    None,
+                )
+                if granted_decision is None:
+                    self.client.respond_error(
+                        request_id,
+                        -32000,
+                        "No compatible decision available for an existing file grant.",
+                    )
+                    record("deny-error")
+                    return
                 send_decision(granted_decision)
                 return
 
@@ -3275,7 +3900,19 @@ class StreamingTurnRunner:
                             f"Tur içi onay sınırı aşıldı ({result.interactive_approval_prompt_count}/{self.max_approval_prompts_per_turn}). Kalan onay istekleri otomatik reddediliyor."
                         )
                     approval_state.circuit_warning_rendered = True
-                send_decision("decline")
+                deny_decision = next(
+                    (value for value in ("decline", "cancel") if value in decisions),
+                    None,
+                )
+                if deny_decision is None:
+                    self.client.respond_error(
+                        request_id,
+                        -32000,
+                        "No safe deny decision available for file approval.",
+                    )
+                    record("deny-error")
+                    return
+                send_decision(deny_decision)
                 return
 
             decision = safe_prompt(
@@ -3285,12 +3922,35 @@ class StreamingTurnRunner:
                 default="decline",
             )
 
-            self._record_file_grant(
+            if decision not in decisions:
+                deny_decisions = [
+                    value for value in decisions if value in {"decline", "cancel"}
+                ]
+                if not deny_decisions:
+                    self.client.respond_error(
+                        request_id,
+                        -32000,
+                        "Approval presenter returned an unavailable decision.",
+                    )
+                    record("deny-error")
+                    return
+                decision = (
+                    "decline" if "decline" in deny_decisions else deny_decisions[0]
+                )
+
+            if decision == "acceptForSession" and not self._record_file_grant(
                 thread_id=result.thread_id,
                 cwd=getattr(self, "current_cwd", None),
                 params=params,
                 decision=decision,
-            )
+            ):
+                self.client.respond_error(
+                    request_id,
+                    -32000,
+                    "Scoped file session grant could not be recorded.",
+                )
+                record("deny-error")
+                return
 
             send_decision(decision)
             return
@@ -3488,19 +4148,61 @@ class StreamingTurnRunner:
                     )
                 )
 
+            known_legacy_decisions = {
+                "approved", "approved_for_session", "denied", "abort",
+            }
+            raw_available = params.get("availableDecisions")
+            if isinstance(raw_available, list):
+                supported_decisions = [
+                    value for value in raw_available
+                    if isinstance(value, str) and value in known_legacy_decisions
+                ]
+            else:
+                supported_decisions = [
+                    "approved", "approved_for_session", "denied", "abort",
+                ]
+
+            request_cwd = getattr(self, "current_cwd", None)
+            ordinary_request = (
+                isinstance(request_cwd, Path)
+                and ordinary_workspace_file_mutation(
+                    params,
+                    workspace_root=request_cwd,
+                )
+            )
+            session_scope_eligible = self._file_session_scope_eligible(
+                result,
+                params,
+            )
+            cx_allowed = (
+                {"approved", "denied", "abort"}
+                if ordinary_request
+                else {"denied", "abort"}
+            )
+            if session_scope_eligible:
+                cx_allowed.add("approved_for_session")
             decisions = [
-                "approved",
-                "approved_for_session",
-                "denied",
-                "abort",
+                value for value in supported_decisions if value in cx_allowed
             ]
 
-            if self._file_grant_eligible(params):
-                granted_decision = (
-                    "approved_for_session"
-                    if "approved_for_session" in decisions
-                    else "approved"
+            if self._file_grant_eligible(result, params):
+                granted_decision = next(
+                    (
+                        value for value in (
+                            "approved_for_session", "approved", "denied", "abort"
+                        )
+                        if value in decisions
+                    ),
+                    None,
                 )
+                if granted_decision is None:
+                    self.client.respond_error(
+                        request_id,
+                        -32000,
+                        "No compatible decision available for an existing file grant.",
+                    )
+                    record("deny-error")
+                    return
                 send_decision(granted_decision)
                 return
 
@@ -3512,22 +4214,60 @@ class StreamingTurnRunner:
                             f"Tur içi onay sınırı aşıldı ({result.interactive_approval_prompt_count}/{self.max_approval_prompts_per_turn}). Kalan onay istekleri otomatik reddediliyor."
                         )
                     approval_state.circuit_warning_rendered = True
-                send_decision("denied")
+                deny_decision = next(
+                    (value for value in ("denied", "abort") if value in decisions),
+                    None,
+                )
+                if deny_decision is None:
+                    self.client.respond_error(
+                        request_id,
+                        -32000,
+                        "No safe deny decision available for legacy file approval.",
+                    )
+                    record("deny-error")
+                    return
+                send_decision(deny_decision)
                 return
 
             decision = safe_prompt(
-                title="File changes",
+                title=(
+                    "File changes"
+                    if ordinary_request
+                    else "File changes rejected by safety boundary"
+                ),
                 details=details,
                 decisions=decisions,
                 default="denied",
             )
 
-            self._record_file_grant(
+            if decision not in decisions:
+                deny_decision = next(
+                    (value for value in ("denied", "abort") if value in decisions),
+                    None,
+                )
+                if deny_decision is None:
+                    self.client.respond_error(
+                        request_id,
+                        -32000,
+                        "Approval presenter returned an unavailable legacy decision.",
+                    )
+                    record("deny-error")
+                    return
+                decision = deny_decision
+
+            if decision == "approved_for_session" and not self._record_file_grant(
                 thread_id=result.thread_id,
                 cwd=getattr(self, "current_cwd", None),
                 params=params,
                 decision=decision,
-            )
+            ):
+                self.client.respond_error(
+                    request_id,
+                    -32000,
+                    "Scoped legacy file session grant could not be recorded.",
+                )
+                record("deny-error")
+                return
 
             send_decision(decision)
             return
@@ -3644,8 +4384,8 @@ class StreamingTurnRunner:
             return False
         return True
 
-    @staticmethod
     def _record_identity_rejection(
+        self,
         result: TurnRunResult,
         method: str,
     ) -> None:
@@ -3658,7 +4398,9 @@ class StreamingTurnRunner:
             "mismatched turn identity."
         )
         if evidence not in result.warnings:
-            result.warnings.append(evidence)
+            self._append_diagnostic(
+                result, "warnings", "warnings_dropped", MAX_TURN_WARNINGS, evidence
+            )
 
     # CX2_POST_WAIT_FINAL_RECOVERY_V1
     def _recover_final_answer_from_thread(
@@ -3742,11 +4484,13 @@ class StreamingTurnRunner:
                 )
 
         if last_error is not None:
-            result.warnings.append(
+            self._append_diagnostic(
+                result,
+                "warnings",
+                "warnings_dropped",
+                MAX_TURN_WARNINGS,
                 "Final answer thread/read fallback failed after "
-                + str(attempt_count)
-                + " attempts: "
-                + repr(last_error)[:300]
+                + str(attempt_count) + " attempts: " + repr(last_error)[:300],
             )
 
         return None
@@ -3815,6 +4559,15 @@ class StreamingTurnRunner:
             != result.turn_id
         ):
             return
+
+        if method in {"item/started", "item/completed"}:
+            lifecycle_item = params.get("item")
+            if isinstance(lifecycle_item, dict) and not self._accept_command_lifecycle_event(
+                result,
+                method,
+                lifecycle_item,
+            ):
+                return
 
         # ---------------------------------------------
         # CX2_NATIVE_WEB_EVENT_DISPATCH_V1
@@ -3935,6 +4688,12 @@ class StreamingTurnRunner:
             ):
 
                 if item_id not in result.command_accumulators:
+                    if len(result.command_accumulators) >= MAX_TURN_COMMANDS:
+                        result.commands_dropped = _increment_bounded_counter(
+                            result.commands_dropped
+                        )
+                        self._fail_capacity(result, "COMMAND_ACCUMULATOR_LIMIT")
+                        return
                     result.command_accumulators[item_id] = BoundedDiagnosticAccumulator(
                         max_total_bytes=MAX_COMMAND_OUTPUT_BYTES_RETAINED,
                         max_head_bytes=MAX_HEAD_BYTES,
@@ -3947,11 +4706,11 @@ class StreamingTurnRunner:
                 # Resilient late-event audit reconciliation if item/completed was already processed.
                 # Strictly fail-closed: late stream deltas update diagnostic/audit text in place,
                 # but NEVER reopen a finalized authorization decision or present new bounded-host offers.
-                for cmd_exec in result.command_executions:
-                    if cmd_exec.get("id") == item_id:
-                        cmd_exec["classification_text"] = updated_text
-                        if updated_text.strip():
-                            cmd_exec["output_snippet"] = updated_text.strip()[:500]
+                cmd_exec = result.command_execution_index.get(item_id)
+                if cmd_exec is not None:
+                    cmd_exec["classification_text"] = updated_text
+                    if updated_text.strip():
+                        cmd_exec["output_snippet"] = updated_text.strip()[:500]
 
                 if self.live:
                     _CX2_TERMINAL.command_output_delta(
@@ -3984,8 +4743,7 @@ class StreamingTurnRunner:
                 result.event_sequence += 1
                 diff_files = extract_changed_files_from_diff(diff, repo_root=getattr(self, "cwd", None))
                 for df in diff_files:
-                    if df.lower() not in [cf.lower() for cf in result.changed_files]:
-                        result.changed_files.append(df)
+                    self._append_changed_file(result, df)
                 if diff_files:
                     result.last_mutation_sequence = result.event_sequence
 
@@ -4063,20 +4821,33 @@ class StreamingTurnRunner:
                 or started_agent_state is None
                 or not started_agent_state.started_summary_recorded
             ):
-                result.started_items.append(
-                    summary
-                )
+                if len(result.started_items) >= MAX_TURN_ITEM_SUMMARIES:
+                    result.started_items_dropped = _increment_bounded_counter(
+                        result.started_items_dropped
+                    )
+                    self._fail_capacity(result, "STARTED_ITEM_LIMIT")
+                    return
+                result.started_items.append(summary)
                 if started_agent_state is not None:
                     started_agent_state.started_summary_recorded = True
 
             started_type = summary.get("type")
+            if started_type == "commandExecution" and isinstance(raw_started_item, dict):
+                started_id = raw_started_item.get("id")
+                received = notification.get("_cx2_received_monotonic")
+                if (
+                    isinstance(started_id, str)
+                    and started_id
+                    and isinstance(received, (int, float))
+                    and len(result.command_started_received) < MAX_TURN_COMMANDS
+                ):
+                    result.command_started_received[started_id] = float(received)
             if started_type == "fileChange":
                 result.last_mutation_sequence = result.event_sequence
                 if isinstance(raw_started_item, dict):
                     started_files = extract_changed_files_from_items([raw_started_item], repo_root=getattr(self, "cwd", None))
                     for sf in started_files:
-                        if sf.lower() not in [cf.lower() for cf in result.changed_files]:
-                            result.changed_files.append(sf)
+                        self._append_changed_file(result, sf)
 
             if (
                 self.live
@@ -4150,9 +4921,13 @@ class StreamingTurnRunner:
                 or completed_agent_state is None
                 or not completed_agent_state.completed_summary_recorded
             ):
-                result.completed_items.append(
-                    completed_summary
-                )
+                if len(result.completed_items) >= MAX_TURN_ITEM_SUMMARIES:
+                    result.completed_items_dropped = _increment_bounded_counter(
+                        result.completed_items_dropped
+                    )
+                    self._fail_capacity(result, "COMPLETED_ITEM_LIMIT")
+                    return
+                result.completed_items.append(completed_summary)
                 if completed_agent_state is not None:
                     completed_agent_state.completed_summary_recorded = True
 
@@ -4167,10 +4942,16 @@ class StreamingTurnRunner:
                 if isinstance(completed_item, dict):
                     item_files = extract_changed_files_from_items([completed_item], repo_root=getattr(self, "cwd", None))
                     for f in item_files:
-                        if f.lower() not in [cf.lower() for cf in result.changed_files]:
-                            result.changed_files.append(f)
+                        self._append_changed_file(result, f)
 
             elif completed_type == "commandExecution":
+                if len(result.command_executions) >= MAX_TURN_COMMANDS:
+                    result.commands_dropped = _increment_bounded_counter(
+                        result.commands_dropped
+                    )
+                    self._fail_capacity(result, "COMMAND_EXECUTION_LIMIT")
+                    return
+                classification_started = self._monotonic()
                 cmd_str = str(completed_summary.get("command") or "")
                 exit_code = completed_summary.get("exitCode")
                 dur_ms = completed_summary.get("durationMs")
@@ -4214,8 +4995,34 @@ class StreamingTurnRunner:
                     "decision_finalized": True,
                     "bounded_host_execution": False,
                     "bounded_offer_presented": False,
+                    "notification_queue_ms": (
+                        max(
+                            0.0,
+                            (classification_started - float(notification["_cx2_received_monotonic"]))
+                            * 1000.0,
+                        )
+                        if isinstance(notification.get("_cx2_received_monotonic"), (int, float))
+                        else None
+                    ),
+                    "protocol_elapsed_ms": (
+                        max(
+                            0.0,
+                            (float(notification["_cx2_received_monotonic"])
+                             - result.command_started_received[item_id]) * 1000.0,
+                        )
+                        if (
+                            isinstance(notification.get("_cx2_received_monotonic"), (int, float))
+                            and item_id in result.command_started_received
+                        )
+                        else None
+                    ),
                 }
+                cmd_record["classification_projection_ms"] = max(
+                    0.0,
+                    (self._monotonic() - classification_started) * 1000.0,
+                )
                 result.command_executions.append(cmd_record)
+                result.command_execution_index[item_id] = cmd_record
 
                 summary_obj = CommandExecutionSummary(
                     command=cmd_str,
@@ -4248,9 +5055,16 @@ class StreamingTurnRunner:
                 and completed_type
                 == "commandExecution"
             ):
+                render_started = self._monotonic()
                 _CX2_TERMINAL.command_completed(
                     completed_summary
                 )
+                indexed_record = result.command_execution_index.get(item_id)
+                if indexed_record is not None:
+                    indexed_record["render_ms"] = max(
+                        0.0,
+                        (self._monotonic() - render_started) * 1000.0,
+                    )
 
             if (
                 completed_type
@@ -4290,7 +5104,9 @@ class StreamingTurnRunner:
             "item/reasoning/textDelta",
         }:
 
-            result.reasoning_event_count += 1
+            result.reasoning_event_count = _increment_bounded_counter(
+                result.reasoning_event_count
+            )
 
             delta = params.get(
                 "delta"
@@ -4300,10 +5116,9 @@ class StreamingTurnRunner:
                 delta,
                 str,
             ):
-                result.reasoning_delta_chars += (
-                    len(
-                        delta
-                    )
+                result.reasoning_delta_chars = _increment_bounded_counter(
+                    result.reasoning_delta_chars,
+                    len(delta),
                 )
 
             return
@@ -4322,8 +5137,9 @@ class StreamingTurnRunner:
                 message,
                 str,
             ):
-                result.warnings.append(
-                    message
+                self._append_diagnostic(
+                    result, "warnings", "warnings_dropped", MAX_TURN_WARNINGS,
+                    message,
                 )
 
                 if self.live:
@@ -4343,16 +5159,13 @@ class StreamingTurnRunner:
                 "error"
             )
 
-            result.errors.append(
-                {
-                    "error":
-                        error,
-
-                    "willRetry":
-                        params.get(
-                            "willRetry"
-                        ),
-                }
+            self._append_diagnostic(
+                result,
+                "errors",
+                "errors_dropped",
+                MAX_TURN_ERRORS,
+                {"error": error, "willRetry": params.get("willRetry")},
+                critical=True,
             )
 
             if self.live:

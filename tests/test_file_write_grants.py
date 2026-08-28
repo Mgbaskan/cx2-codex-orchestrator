@@ -66,7 +66,7 @@ class TestFileWriteGrants(unittest.TestCase):
                 workspace_root=self.root,
             )
         )
-        self.assertFalse(
+        self.assertTrue(
             ordinary_workspace_file_mutation(
                 {"fileChanges": {"git reset --hard": {"action": "edit"}}},
                 workspace_root=self.root,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import hashlib
 import shutil
 import sys
 import threading
@@ -14,11 +15,26 @@ from verification_gate import (
     unwrap_display_command,
 )
 from terminal_markdown import TerminalMarkdownStream, render_markdown
+from terminal_safety import sanitize_untrusted_text
 
 
 CX2_TERMINAL_RENDERER_V1 = True
 MAX_ACTIVITY_ITEMS = 256
 MAX_VISIBLE_DIFF_BYTES = 256 * 1024
+
+
+def _quota_freshness(quota: dict[str, Any]) -> str:
+    captured = quota.get("capturedAt")
+    if not isinstance(captured, str):
+        return "age unknown"
+    try:
+        stamp = datetime.fromisoformat(captured.replace("Z", "+00:00"))
+        if stamp.tzinfo is None:
+            stamp = stamp.replace(tzinfo=timezone.utc)
+        age = max(0, int((datetime.now(timezone.utc) - stamp).total_seconds() // 60))
+        return f"{age}m old"
+    except (ValueError, TypeError):
+        return "age unknown"
 
 
 @dataclass(frozen=True)
@@ -73,12 +89,16 @@ class TerminalRenderer:
         self._visible_lines: dict[str, int] = {}
 
         self._last_diff: str = ""
+        self._last_diff_chars = 0
+        self._last_diff_digest = ""
         self._needs_agent_separator: bool = False
         self._response_open: bool = False
         self._response_has_text: bool = False
         self._response_ends_with_newline: bool = True
         self._status_text: str = ""
         self._status_visible = False
+        self._status_desired = False
+        self._presentation_owner = "content"
         self._status_quota: dict[str, Any] | None = None
         self._status_context: dict[str, Any] | None = None
         self._status_route: tuple[str, str, str] | None = None
@@ -90,6 +110,8 @@ class TerminalRenderer:
         self._folded_items.clear()
         self._visible_lines.clear()
         self._last_diff = ""
+        self._last_diff_chars = 0
+        self._last_diff_digest = ""
         self._needs_agent_separator = False
         self._response_open = False
         self._response_has_text = False
@@ -99,10 +121,12 @@ class TerminalRenderer:
     def state(self, name: str, detail: str = "") -> None:
         """Render a semantic lifecycle state without relying on colour."""
         self.stop_activity()
-        text = f"[cx] {str(name).upper()}"
+        previous = self.suspend_presentation("state")
+        text = f"[cx] {sanitize_untrusted_text(str(name)).upper()}"
         if detail:
-            text += f" · {detail}"
+            text += f" · {sanitize_untrusted_text(str(detail))}"
         self._line(self._bold(text) if self.color_enabled else text)
+        self.restore_presentation(previous)
 
     def _begin_response(self) -> None:
         if self._response_open:
@@ -313,6 +337,8 @@ class TerminalRenderer:
             return
 
         self.stop_activity()
+        self.suspend_status()
+        self._presentation_owner = "spinner"
 
         event = threading.Event()
 
@@ -468,17 +494,25 @@ class TerminalRenderer:
         if not diff:
             return
 
-        if diff == self._last_diff:
+        incoming_digest = hashlib.sha256(diff.encode("utf-8")).hexdigest()
+        if (
+            len(diff) == self._last_diff_chars
+            and incoming_digest == self._last_diff_digest
+        ):
             return
 
         self.stop_activity()
+        self.suspend_status()
 
-        previous = self._last_diff
+        previous_chars = self._last_diff_chars
+        previous_digest = self._last_diff_digest
         bounded_diff = diff
         raw_diff_bytes = diff.encode("utf-8")
         if len(raw_diff_bytes) > MAX_VISIBLE_DIFF_BYTES:
             bounded_diff = raw_diff_bytes[-MAX_VISIBLE_DIFF_BYTES:].decode("utf-8", errors="replace")
         self._last_diff = bounded_diff
+        self._last_diff_chars = len(diff)
+        self._last_diff_digest = incoming_digest
 
         # turn/diff/updated contains the latest aggregated diff.
         #
@@ -487,13 +521,14 @@ class TerminalRenderer:
         # complete replacement diff so the terminal never shows a
         # misleading partial patch.
         if (
-            previous
-            and diff.startswith(
-                previous
-            )
+            previous_chars
+            and len(diff) >= previous_chars
+            and hashlib.sha256(
+                diff[:previous_chars].encode("utf-8")
+            ).hexdigest() == previous_digest
         ):
             visible_diff = diff[
-                len(previous):
+                previous_chars:
             ]
 
             heading = "[diff +]"
@@ -501,7 +536,21 @@ class TerminalRenderer:
             visible_diff = diff
             heading = "[diff]"
 
+        visible_bytes = visible_diff.encode("utf-8")
+        if len(visible_bytes) > MAX_VISIBLE_DIFF_BYTES:
+            omission = b"\n[cx2] diff middle omitted from terminal view\n"
+            retained_budget = MAX_VISIBLE_DIFF_BYTES - len(omission)
+            head_budget = retained_budget // 2
+            tail_budget = retained_budget - head_budget
+            visible_diff = (
+                visible_bytes[:head_budget].decode("utf-8", errors="replace")
+                + omission.decode("ascii")
+                + visible_bytes[-tail_budget:].decode("utf-8", errors="replace")
+            )
+            heading += " (bounded head/tail)"
+
         if not visible_diff:
+            self.resume_status()
             return
 
         self._needs_agent_separator = True
@@ -525,6 +574,8 @@ class TerminalRenderer:
             rendered_lines = lines
 
         for line in rendered_lines:
+
+            line = sanitize_untrusted_text(line)
 
             if (
                 line.startswith("+")
@@ -863,7 +914,7 @@ class TerminalRenderer:
         presented = (
             self._markdown_stream.feed(delta, color=self.color_enabled)
             if self.is_tty
-            else delta
+            else sanitize_untrusted_text(delta)
         )
         self._write(presented)
         if delta:
@@ -929,16 +980,7 @@ class TerminalRenderer:
             state = str(quota.get("state") or "").upper()
             if state and state not in {"NORMAL", "UNKNOWN", "NONE"}:
                 parts.append(state)
-            captured = quota.get("capturedAt")
-            if isinstance(captured, str):
-                try:
-                    stamp = datetime.fromisoformat(captured.replace("Z", "+00:00"))
-                    if stamp.tzinfo is None:
-                        stamp = stamp.replace(tzinfo=timezone.utc)
-                    age = max(0, int((datetime.now(timezone.utc) - stamp).total_seconds() // 60))
-                    parts.append(f"{age}m old")
-                except (ValueError, TypeError):
-                    pass
+            parts.append(_quota_freshness(quota))
             if quota.get("refreshUnavailable"):
                 parts.append("refresh unavailable")
         if isinstance(context, dict):
@@ -949,10 +991,12 @@ class TerminalRenderer:
         return self._status_text
 
     def render_status_line(self) -> None:
+        self._status_desired = bool(self._status_text)
         if not self._status_text or not self.capabilities.sticky_status:
             return
         self._write("\r\x1b[2K" + self._dim("[cx] " + self._status_text), flush=True)
         self._status_visible = True
+        self._presentation_owner = "status"
 
     def suspend_status(self) -> None:
         if self._status_visible and self.capabilities.cursor:
@@ -960,7 +1004,24 @@ class TerminalRenderer:
             self._status_visible = False
 
     def resume_status(self) -> None:
-        self.render_status_line()
+        if self._status_desired:
+            self.render_status_line()
+
+    def suspend_presentation(self, owner: str) -> tuple[str, bool]:
+        """Transfer current-row ownership to a modal presenter."""
+
+        previous = (self._presentation_owner, self._status_desired)
+        self.stop_activity()
+        self.suspend_status()
+        self._presentation_owner = str(owner)
+        return previous
+
+    def restore_presentation(self, previous: tuple[str, bool]) -> None:
+        previous_owner, wanted_status = previous
+        self._presentation_owner = previous_owner
+        self._status_desired = bool(wanted_status)
+        if wanted_status:
+            self.resume_status()
 
     def confirm_empty_response(self) -> None:
         """Open the TTY response boundary for an authoritative empty final."""
@@ -989,7 +1050,11 @@ class TerminalRenderer:
 
         self._response_open = True
         self._markdown_stream = TerminalMarkdownStream()
-        presented = render_markdown(authoritative_text, color=self.color_enabled) if self.is_tty else authoritative_text
+        presented = (
+            render_markdown(authoritative_text, color=self.color_enabled)
+            if self.is_tty
+            else sanitize_untrusted_text(authoritative_text)
+        )
         self._write(presented)
         self._response_has_text = bool(authoritative_text)
         self._response_ends_with_newline = (
@@ -1183,6 +1248,7 @@ class TerminalRenderer:
     ) -> None:
 
         self.stop_activity()
+        previous = self.suspend_presentation("web")
 
         self._line()
 
@@ -1191,10 +1257,9 @@ class TerminalRenderer:
                 "[web]"
             )
             + " "
-            + self._web_action_text(
-                item
-            )
+            + sanitize_untrusted_text(self._web_action_text(item))
         )
+        self.restore_presentation(previous)
 
 
     def web_search_completed(
@@ -1203,6 +1268,7 @@ class TerminalRenderer:
     ) -> None:
 
         self.stop_activity()
+        previous = self.suspend_presentation("web")
         self._needs_agent_separator = True
 
         self._line(
@@ -1210,10 +1276,9 @@ class TerminalRenderer:
                 "[web ok]"
             )
             + " "
-            + self._web_action_text(
-                item
-            )
+            + sanitize_untrusted_text(self._web_action_text(item))
         )
+        self.restore_presentation(previous)
 
 
     @staticmethod
@@ -1234,11 +1299,12 @@ class TerminalRenderer:
     ) -> None:
 
         self.stop_activity()
+        self.suspend_status()
         self._needs_agent_separator = False
 
         unwrapped = unwrap_display_command(str(command))
         command_text = self._truncate_command(
-            unwrapped or str(command)
+            sanitize_untrusted_text(unwrapped or str(command))
         )
 
         prefix = self._cyan(
@@ -1251,6 +1317,7 @@ class TerminalRenderer:
             + " "
             + command_text
         )
+        self.resume_status()
 
     def command_output_delta(
         self,
@@ -1259,16 +1326,18 @@ class TerminalRenderer:
     ) -> None:
 
         self.stop_activity()
+        self.suspend_status()
 
         if self.compact_tools and self.is_tty:
             # Keep the full output in turn_runner's bounded ledger; the normal
             # terminal view shows only the command badge on completion.
+            self.resume_status()
             return
 
         # Redirected stdout must remain complete and machine/log friendly.
         if not self.is_tty:
             self._write(
-                delta
+                sanitize_untrusted_text(delta)
             )
             return
 
@@ -1322,11 +1391,7 @@ class TerminalRenderer:
         ] = used
 
         if output_parts:
-            self._write(
-                "".join(
-                    output_parts
-                )
-            )
+            self._write(sanitize_untrusted_text("".join(output_parts)))
 
         if key in self._folded_items:
             self._line(
@@ -1335,6 +1400,7 @@ class TerminalRenderer:
                     "full output retained internally"
                 )
             )
+        self.resume_status()
 
     def command_completed(
         self,
@@ -1342,6 +1408,7 @@ class TerminalRenderer:
     ) -> None:
 
         self.stop_activity()
+        self.suspend_status()
         self._needs_agent_separator = True
 
         exit_code = summary.get(
@@ -1416,6 +1483,7 @@ class TerminalRenderer:
         self._line(
             text
         )
+        self.resume_status()
 
     # ---------------------------------------------------------
     # Turn header & metadata presentation
@@ -1454,9 +1522,16 @@ class TerminalRenderer:
             if isinstance(remaining, (int, float)):
                 parts.append(f"{remaining:.0f}% kaldı")
 
+            parts.append(_quota_freshness(quota))
+
             state = str(quota.get("state") or "").upper()
             if state and state not in {"NORMAL", "UNKNOWN", "NONE"}:
                 parts.append(state)
+        elif isinstance(quota, dict):
+            parts.append("quota unavailable")
+            parts.append(_quota_freshness(quota))
+            if quota.get("refreshUnavailable"):
+                parts.append("refresh unavailable")
 
         line_text = f"[cx] {' · '.join(parts)}"
         self._line(self._dim(line_text))
@@ -1506,6 +1581,7 @@ class TerminalRenderer:
                     "native Codex compaction remains enabled."
                 )
             )
+            self.resume_status()
 
     # ---------------------------------------------------------
     # Turn lifecycle
@@ -1575,6 +1651,7 @@ class TerminalRenderer:
     ) -> None:
 
         self.stop_activity()
+        previous = self.suspend_presentation("warning")
 
         self._line()
         self._line(
@@ -1582,8 +1659,9 @@ class TerminalRenderer:
                 "[cx2 warning]"
             )
             + " "
-            + str(message)
+            + sanitize_untrusted_text(str(message))
         )
+        self.restore_presentation(previous)
 
     def error(
         self,
@@ -1591,6 +1669,7 @@ class TerminalRenderer:
     ) -> None:
 
         self.stop_activity()
+        previous = self.suspend_presentation("error")
 
         self._line()
         self._line(
@@ -1598,8 +1677,9 @@ class TerminalRenderer:
                 "[cx2 error]"
             )
             + " "
-            + str(error)
+            + sanitize_untrusted_text(str(error))
         )
+        self.restore_presentation(previous)
 
     def interrupting(
         self,
@@ -1614,6 +1694,12 @@ class TerminalRenderer:
             )
             + " İşlem kesiliyor..."
         )
+        self.resume_status()
+
+    def interrupted(self) -> None:
+        """Compatibility hook for a completed interruption transition."""
+
+        self.interrupting()
 
     def verification_continuation_started(
         self,

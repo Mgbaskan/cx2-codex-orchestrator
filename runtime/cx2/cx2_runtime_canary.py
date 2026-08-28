@@ -1,14 +1,48 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import sqlite3
 import sys
+import tempfile
 
 
-CX_HOME = Path.home() / ".cx"
-STAGE = CX_HOME / "runtime" / "cx2"
-SRC = CX_HOME / "src"
+if len(sys.argv) < 3:
+    raise SystemExit(
+        "usage: cx2_runtime_canary.py DISPOSABLE_CX_HOME DISPOSABLE_WORKSPACE"
+    )
+
+DISPOSABLE_CX_HOME = Path(sys.argv[1]).resolve()
+DISPOSABLE_WORKSPACE = Path(sys.argv[2]).resolve()
+TEMP_ROOT = Path(tempfile.gettempdir()).resolve()
+USER_ROOT = Path(os.environ.get("USERPROFILE") or os.environ.get("HOME") or ".").resolve()
+PRODUCTION_USER_STATE = (USER_ROOT / ".cx").resolve()
+
+
+def _inside(child: Path, parent: Path) -> bool:
+    try:
+        child.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+if (
+    DISPOSABLE_CX_HOME == PRODUCTION_USER_STATE
+    or not _inside(DISPOSABLE_CX_HOME, TEMP_ROOT)
+    or not _inside(DISPOSABLE_WORKSPACE, TEMP_ROOT)
+):
+    raise SystemExit(
+        "refusing production or non-temporary canary state; all targets must be disposable"
+    )
+
+os.environ["CX2_CANARY_MODE"] = "1"
+os.environ["CX2_DISPOSABLE_CANARY_HOME"] = str(DISPOSABLE_CX_HOME)
+
+CX_HOME = DISPOSABLE_CX_HOME
+STAGE = Path(__file__).resolve().parent
+SRC = STAGE.parent.parent / "src"
 
 for candidate in (
     str(STAGE),
@@ -34,22 +68,17 @@ from session_adapter import (
 )
 
 
-REPO_ROOT = Path(
-    r"C:\Users\example-user\Projects\sample-app"
-).resolve()
+REPO_ROOT = DISPOSABLE_WORKSPACE
 
-PRODUCTION_DB = (
+TEMP_DB = (
     CX_HOME
     / "data"
     / "usage.sqlite3"
 )
 
-TEMP_DB = Path(
-    sys.argv[1]
-).resolve()
-
 RESULT = (
-    STAGE
+    CX_HOME
+    / "data"
     / "cx2-runtime-canary-last.json"
 )
 
@@ -69,23 +98,10 @@ def create_isolated_db() -> None:
     """
 
     if TEMP_DB.exists():
-        TEMP_DB.unlink()
-
-    source = sqlite3.connect(
-        str(PRODUCTION_DB)
-    )
-
-    target = sqlite3.connect(
-        str(TEMP_DB)
-    )
-
-    try:
-        source.backup(
-            target
-        )
-    finally:
-        target.close()
-        source.close()
+        raise RuntimeError("Disposable canary usage database must start absent.")
+    TEMP_DB.parent.mkdir(parents=True, exist_ok=True)
+    target = production_cx.init_db()
+    target.close()
 
 
 def main() -> int:

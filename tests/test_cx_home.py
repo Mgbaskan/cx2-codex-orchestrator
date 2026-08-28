@@ -192,6 +192,13 @@ class TestCxHomeResolver(unittest.TestCase):
         self.assertNotEqual(disposable_cx, original_cx)
         self.assertEqual(resolve_cx_home(), disposable_cx)
 
+        configured_root = os.environ.get("CX2_TEST_TEMP_ROOT")
+        if configured_root:
+            self.assertEqual(
+                _bootstrap.TEST_USER_HOME.parent,
+                Path(os.path.abspath(configured_root)),
+            )
+
         targets = {
             "crash log": cx2_cli.CX2_HOME / "cx2-cli-last-crash.txt",
             "App Server stderr": client.STDERR_FILE,
@@ -246,13 +253,14 @@ class TestCxHomeResolver(unittest.TestCase):
         self.assertEqual(write_text.call_count, 1)
         self.assertEqual(write_text.call_args.args[0].resolve(), expected_stderr)
 
-    def test_isolated_runner_outer_temp_avoids_real_agent_cache(self):
+    def test_isolated_runner_outer_temp_avoids_synthetic_agent_cache(self):
         outer_temp = run_isolated_tests.resolve_isolated_temp_parent()
-        real_agent_cache = (
-            _bootstrap.ORIGINAL_USER_HOME / ".codex-agent-cache"
-        ).resolve()
-        self.assertFalse(_is_subpath(outer_temp, real_agent_cache))
-        if os.environ.get("LOCALAPPDATA"):
+        synthetic_agent_cache = _bootstrap.TEST_TEMP_ROOT / "synthetic-user" / ".agent-cache"
+        self.assertFalse(_is_subpath(outer_temp, synthetic_agent_cache))
+        configured_root = os.environ.get("CX2_TEST_TEMP_ROOT")
+        if configured_root:
+            self.assertEqual(outer_temp, Path(os.path.abspath(configured_root)))
+        elif os.environ.get("LOCALAPPDATA"):
             self.assertEqual(
                 outer_temp,
                 (Path(os.environ["LOCALAPPDATA"]) / "Temp").resolve(),

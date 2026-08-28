@@ -30,9 +30,12 @@ from verification_gate import (
 from bounded_verification_runner import (
     BoundedExecutionResult,
     BoundedStreamReader,
+    ProcessTerminationOutcome,
     execute_bounded_verification_command,
     is_verification_command_eligible,
     kill_process_tree,
+    _wait_for_parent_exit,
+    _terminate_windows_owned_tree,
     MAX_STDOUT_BYTES,
     MAX_STDERR_BYTES,
 )
@@ -263,7 +266,9 @@ class TestPhase11MaliciousVerificationCommandLifecycle(unittest.TestCase):
     """Test security model when a test script contains a deliberate file mutation."""
 
     def setUp(self) -> None:
-        self.temp_dir = tempfile.mkdtemp(prefix="cx2_malicious_test_")
+        self.temp_dir = tempfile.mkdtemp(
+            prefix="cx2_malicious_test_", dir=_bootstrap.TEST_TEMP_ROOT
+        )
         self.ws_path = Path(self.temp_dir)
         self.marker_file = self.ws_path / "disposable_marker.txt"
 
@@ -394,7 +399,7 @@ class TestPhase12TrueBoundedOutputCapture(unittest.TestCase):
     """
 
     def test_basic_zero_output(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as temp_dir:
             cmd = f'"{sys.executable}" -c "pass"'
             res = execute_bounded_verification_command(cmd, cwd=temp_dir, timeout=10.0)
             self.assertEqual(res.exit_code, 0)
@@ -404,9 +409,22 @@ class TestPhase12TrueBoundedOutputCapture(unittest.TestCase):
             self.assertFalse(res.stderr_truncated)
             self.assertEqual(res.stdout_bytes_total, 0)
             self.assertEqual(res.stderr_bytes_total, 0)
+            self.assertTrue(res.resource_cleanup_verified, res.cleanup_diagnostic)
+
+    def test_normal_command_releases_disposable_cwd_immediately(self) -> None:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as temp_dir:
+            cwd = Path(temp_dir) / "normal-cwd"
+            cwd.mkdir()
+            result = execute_bounded_verification_command(
+                f'"{sys.executable}" -c "pass"', cwd=cwd, timeout=10.0
+            )
+            self.assertEqual(result.exit_code, 0)
+            self.assertTrue(result.resource_cleanup_verified, result.cleanup_diagnostic)
+            cwd.rmdir()
+            self.assertFalse(cwd.exists())
 
     def test_basic_small_stdout_and_stderr(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as temp_dir:
             cmd = f'"{sys.executable}" -c "import sys; sys.stdout.write(\'Hello Stdout\\n\'); sys.stderr.write(\'Hello Stderr\\n\'); sys.exit(7)"'
             res = execute_bounded_verification_command(cmd, cwd=temp_dir, timeout=10.0)
             self.assertEqual(res.exit_code, 7)
@@ -416,7 +434,7 @@ class TestPhase12TrueBoundedOutputCapture(unittest.TestCase):
             self.assertFalse(res.stderr_truncated)
 
     def test_boundary_below_at_and_above_limit(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as temp_dir:
             limit = 10_000
 
             # 1. Below limit (9,000 bytes)
@@ -446,7 +464,7 @@ class TestPhase12TrueBoundedOutputCapture(unittest.TestCase):
 
     def test_large_adversarial_50mb_stdout_and_50mb_stderr(self) -> None:
         """Process generating 50MB stdout and 50MB stderr concurrently must complete with bounded memory."""
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as temp_dir:
             # Script writes 50MB stdout and 50MB stderr
             code = (
                 "import sys\n"
@@ -476,7 +494,7 @@ class TestPhase12TrueBoundedOutputCapture(unittest.TestCase):
 
     def test_infinite_output_timeout_and_process_tree_cleanup(self) -> None:
         """Continuous infinite output on stdout/stderr under timeout across 10 repeated cycles."""
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as temp_dir:
             script = (
                 "import subprocess, sys, time\n"
                 "sys.stdout.write('O' * 1000)\n"
@@ -504,21 +522,122 @@ class TestPhase12TrueBoundedOutputCapture(unittest.TestCase):
 
             # Run 10 repeated cycles
             for iter_idx in range(1, 11):
+                run_cwd = Path(temp_dir) / f"timeout-cwd-{iter_idx}"
+                run_cwd.mkdir()
                 t0 = time.monotonic()
                 cmd = f'"{sys.executable}" "{tree_py}"'
-                res = execute_bounded_verification_command(cmd, cwd=temp_dir, timeout=0.8)
+                res = execute_bounded_verification_command(cmd, cwd=run_cwd, timeout=0.8)
                 elapsed = time.monotonic() - t0
 
                 self.assertEqual(res.exit_code, -1)
                 self.assertIn("timed out", res.output_snippet.lower())
+                self.assertTrue(res.process_tree_termination_attempted)
+                self.assertTrue(res.process_tree_termination_verified, res.cleanup_diagnostic)
+                self.assertTrue(res.resource_cleanup_verified, res.cleanup_diagnostic)
                 self.assertTrue(res.stdout_truncated or res.stdout_bytes_total > 0)
                 self.assertLessEqual(len(res.stdout), MAX_STDOUT_BYTES + 300)
                 self.assertLessEqual(len(res.stderr), MAX_STDERR_BYTES + 300)
-                self.assertLess(elapsed, 4.0)
+                self.assertLess(elapsed, 4.0, res.cleanup_diagnostic)
+                run_cwd.rmdir()
+                self.assertFalse(run_cwd.exists())
+
+    def test_infinite_stdout_and_stderr_timeouts_are_independently_bounded(self) -> None:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as temp_dir:
+            root = Path(temp_dir)
+            for stream_name in ("stdout", "stderr"):
+                with self.subTest(stream=stream_name):
+                    script = root / f"infinite-{stream_name}.py"
+                    target = "sys.stdout" if stream_name == "stdout" else "sys.stderr"
+                    script.write_text(
+                        "import sys\n"
+                        f"target = {target}\n"
+                        "while True:\n"
+                        "    target.write('X' * 10000)\n"
+                        "    target.flush()\n",
+                        encoding="utf-8",
+                    )
+                    cwd = root / f"cwd-{stream_name}"
+                    cwd.mkdir()
+                    result = execute_bounded_verification_command(
+                        f'"{sys.executable}" "{script}"', cwd=cwd, timeout=0.5
+                    )
+                    self.assertTrue(
+                        result.resource_cleanup_verified, result.cleanup_diagnostic
+                    )
+                    self.assertLessEqual(len(result.stdout), MAX_STDOUT_BYTES + 300)
+                    self.assertLessEqual(len(result.stderr), MAX_STDERR_BYTES + 300)
+                    selected_total = (
+                        result.stdout_bytes_total
+                        if stream_name == "stdout"
+                        else result.stderr_bytes_total
+                    )
+                    self.assertGreater(selected_total, 0)
+                    cwd.rmdir()
+
+    def test_taskkill_success_is_not_misreported_as_verified_tree_death(self) -> None:
+        completed = MagicMock(returncode=0)
+        with patch("bounded_verification_runner.sys.platform", "win32"), patch(
+            "bounded_verification_runner.subprocess.run", return_value=completed
+        ):
+            outcome = kill_process_tree(12345)
+        self.assertTrue(outcome.attempted)
+        self.assertFalse(outcome.verified)
+        self.assertIn("not independently verified", outcome.diagnostic)
+
+    def test_taskkill_failure_is_truthful(self) -> None:
+        with patch("bounded_verification_runner.sys.platform", "win32"), patch(
+            "bounded_verification_runner.subprocess.run",
+            side_effect=subprocess.TimeoutExpired("taskkill", 1.0),
+        ):
+            outcome = kill_process_tree(12345)
+        self.assertTrue(outcome.attempted)
+        self.assertFalse(outcome.verified)
+        self.assertIn("taskkill failed", outcome.diagnostic)
+
+    def test_taskkill_failure_prevents_combined_runner_verification(self) -> None:
+        proc = MagicMock(pid=12345)
+        job = MagicMock()
+        job.terminate.return_value = ProcessTerminationOutcome(
+            True, True, 0, "synthetic Job Object drain verified"
+        )
+        failed_taskkill = ProcessTerminationOutcome(
+            True, False, 1, "synthetic taskkill failure"
+        )
+        with patch(
+            "bounded_verification_runner.kill_process_tree",
+            return_value=failed_taskkill,
+        ):
+            outcome = _terminate_windows_owned_tree(proc, job)
+        self.assertTrue(outcome.attempted)
+        self.assertFalse(outcome.verified)
+        self.assertIn("synthetic taskkill failure", outcome.diagnostic)
+        self.assertIn("not verified", outcome.diagnostic)
+
+    def test_parent_wait_failure_prevents_cleanup_success_claim(self) -> None:
+        proc = MagicMock()
+        proc.wait.side_effect = subprocess.TimeoutExpired("synthetic", 2.0)
+        verified, diagnostic = _wait_for_parent_exit(proc, timeout=2.0)
+        self.assertFalse(verified)
+        self.assertIn("parent wait failed", diagnostic)
+        self.assertIn("TimeoutExpired", diagnostic)
+
+    def test_delayed_reader_prevents_silent_cleanup_success(self) -> None:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as temp_dir:
+            with patch(
+                "bounded_verification_runner._settle_readers",
+                return_value=(False, ["synthetic delayed reader remained live"]),
+            ):
+                result = execute_bounded_verification_command(
+                    f'"{sys.executable}" -c "pass"', cwd=temp_dir, timeout=10.0
+                )
+            self.assertEqual(result.exit_code, 0)
+            self.assertFalse(result.resource_cleanup_verified)
+            self.assertIn("synthetic delayed reader", result.cleanup_diagnostic)
+            self.assertIn("could not be verified", result.stderr)
 
     def test_utf8_multibyte_high_volume(self) -> None:
         """Multibyte UTF-8 characters (Turkish chars & 4-byte emojis) must decode without crashing."""
-        with tempfile.TemporaryDirectory() as temp_dir:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as temp_dir:
             # 🇹🇷 = 8 bytes, ğüşıöç = 12 bytes
             code = (
                 "import sys\n"

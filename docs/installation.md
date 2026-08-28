@@ -30,6 +30,10 @@ Run the diagnostics check to verify your setup:
 cx --doctor
 ```
 
+The installer first runs the offline `cx --doctor-offline` managed-file hash
+check. Authenticated account/model diagnostics run separately; temporary online
+unavailability is reported but does not roll back a structurally valid install.
+
 ## Updating Managed Files
 
 To perform a rollback-safe managed upgrade of CX2 runtime files without touching your user state (database, logs, or custom policy configuration):
@@ -40,3 +44,9 @@ powershell -ExecutionPolicy Bypass -File scripts/install.ps1
 
 > [!NOTE]
 > Active CX processes must be closed prior to upgrading so the existing virtual environment (`runtime\venv`) can be safely replaced. If an upgrade fails midway, the installer performs a transactional managed-artifact rollback to restore the previous runtime and virtual environment.
+
+The installer owns `src/cx.py`, `bin/cx.exe`, `bin/cx.cmd`, and the Python files
+under `runtime/cx2`. A hashed `managed-files.json` records that set and obsolete
+managed Python modules are reconciled on upgrade. `data`, `policy.json`, logs,
+and files outside the managed surface are preserved. Installer-owned cleanup is
+retried and any remaining backup/temp path is reported explicitly.

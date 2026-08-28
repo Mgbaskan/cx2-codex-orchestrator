@@ -41,7 +41,7 @@ class MockStdin:
 class TestPromptTransport(unittest.TestCase):
 
     def setUp(self) -> None:
-        self.temp_dir_obj = tempfile.TemporaryDirectory()
+        self.temp_dir_obj = tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT)
         self.temp_dir = Path(self.temp_dir_obj.name)
 
     def tearDown(self) -> None:

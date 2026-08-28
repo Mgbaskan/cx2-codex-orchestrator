@@ -14,7 +14,7 @@ Verification evidence requires exit code 0 from legitimate test execution withou
 
 ## Fail-Closed Mutation Authorization
 
-Under Windows Codex 0.144.4 compatibility mode, effective execution operates in `read-only` sandbox with `approval_policy = "on-request"`. Authorization is explicit. A user may remember ordinary create/edit/patch approval only for the current runtime instance, App Server thread, and canonical workspace root. This in-memory grant cannot authorize unresolved or outside-workspace paths, destructive changes, shell/host execution, privilege escalation, `dangerFullAccess`, or another thread/workspace/runtime/process. User decline remains fail-closed and preserves the filesystem.
+Under Windows Codex 0.144.4 compatibility mode, effective execution operates in `read-only` sandbox with `approval_policy = "on-request"`. Authorization is explicit. A user may remember ordinary create/edit/patch approval only for the current runtime instance, App Server thread, and canonical workspace root. Reserved DOS devices, alternate data streams, device namespaces, drive-relative ambiguity, dangerous trailing dot/space normalization, reparse escapes and mixed unsafe target sets fail closed. Server-advertised session decisions are intersected with this locally proven scope. The grant cannot authorize unresolved or outside-workspace paths, destructive changes, shell/host execution, privilege escalation, `dangerFullAccess`, or another thread/workspace/runtime/process.
 
 ## Visible Transcript Privacy
 
@@ -40,9 +40,12 @@ Instead, CX2 offers one-shot bounded verification execution:
 - **Failure Precedence Over Permission Noise**: Conclusive test, lint, typecheck, or build failures take precedence over sandbox/permission noise. Commands with genuine failure evidence are marked `FAILED` and are never eligible for bounded host execution offers.
 - **Fail-Closed Late Evidence Authorization Barrier**: The `item/completed` event serves as the authoritative decision point for bounded-verification host offers. Late stream deltas arriving after `item/completed` may update telemetry and audit classifications but strictly fail closed and cannot reopen authorization or create new host-execution offers.
 - **Bounded Command Diagnostic Retention**: Child command output and diagnostic streams retain a bounded head+tail window (first 64 KiB + most recent 448 KiB, retaining at most 512 KiB per command), empirically exercised with child output streams up to 100 MB per command.
-- **Full Process-Tree Termination**: On timeout, all child and descendant processes are forcefully terminated via `taskkill /F /T /PID`.
+- **Truthful Process-Tree Termination**: On timeout CX2 attempts bounded descendant termination (`taskkill /F /T /PID` on Windows), waits for observable process exit, and reports failure or uncertainty rather than claiming termination without evidence. OS-level races mean this is not a zero-risk orphan guarantee.
 - **Shared Cache Invariant**: CX2's bounded-verification path does not permission-alter or permanently redirect the shared `.codex-agent-cache` directory. Ordinary Codex-managed cache behavior remains unchanged.
 
 ### Residual Risk
 
 When the user approves bounded verification execution, the approved command runs on the host outside the Codex read-only filesystem sandbox under a disposable execution environment profile. Commands in local projects may contain arbitrary build or test script logic. The security boundary relies on explicit human authorization of the exact command and working directory.
+
+Terminal presentation escapes untrusted control bytes; canonical local
+transcripts remain plaintext and retain the original logical model text.

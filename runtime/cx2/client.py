@@ -61,6 +61,15 @@ class _OmitType:
 
 OMIT = _OmitType()
 
+MAX_NOTIFICATION_QUEUE = 4096
+MAX_SERVER_REQUEST_QUEUE = 256
+MAX_UNKNOWN_MESSAGE_QUEUE = 256
+MAX_NOTIFICATION_BACKLOG = 4096
+MAX_PENDING_REQUESTS = 128
+MAX_STDERR_LINES = 1024
+MAX_STDERR_LINE_CHARS = 4096
+MAX_CLOSE_DIAGNOSTICS = 16
+
 
 class AppServerClient:
     """
@@ -97,11 +106,14 @@ class AppServerClient:
             | None
         ) = None
 
-        self.stderr_lines: list[str] = []
+        self.stderr_lines: deque[str] = deque(maxlen=MAX_STDERR_LINES)
+        self.stderr_lines_dropped = 0
+        self.transport_failure: str | None = None
+        self.close_diagnostics: deque[str] = deque(maxlen=MAX_CLOSE_DIAGNOSTICS)
 
         self.notifications: queue.Queue[
             dict[str, Any]
-        ] = queue.Queue()
+        ] = queue.Queue(maxsize=MAX_NOTIFICATION_QUEUE)
 
         # Notifications retained by a selective terminal-boundary drain.
         # This backlog is client-owned so it survives individual turn runners.
@@ -112,11 +124,11 @@ class AppServerClient:
 
         self.server_requests: queue.Queue[
             dict[str, Any]
-        ] = queue.Queue()
+        ] = queue.Queue(maxsize=MAX_SERVER_REQUEST_QUEUE)
 
         self.unknown_messages: queue.Queue[
             dict[str, Any]
-        ] = queue.Queue()
+        ] = queue.Queue(maxsize=MAX_UNKNOWN_MESSAGE_QUEUE)
 
         self._pending: dict[
             int,
@@ -267,7 +279,30 @@ class AppServerClient:
             )
 
         except subprocess.TimeoutExpired:
-            process.terminate()
+            if os.name == "nt" and getattr(process, "pid", 0):
+                try:
+                    killed = subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(process.pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                        timeout=5.0,
+                    )
+                    if killed.returncode != 0:
+                        self.close_diagnostics.append(
+                            f"taskkill returned exit code {killed.returncode}"
+                        )
+                except Exception as exc:
+                    self.close_diagnostics.append(
+                        f"taskkill failed: {type(exc).__name__}: {str(exc)[:256]}"
+                    )
+            else:
+                try:
+                    process.terminate()
+                except Exception as exc:
+                    self.close_diagnostics.append(
+                        f"terminate failed: {type(exc).__name__}: {str(exc)[:256]}"
+                    )
 
             try:
                 process.wait(
@@ -275,11 +310,24 @@ class AppServerClient:
                 )
 
             except subprocess.TimeoutExpired:
-                process.kill()
+                try:
+                    process.kill()
+                    process.wait(timeout=2.0)
+                except Exception as exc:
+                    self.close_diagnostics.append(
+                        "App Server process survival could not be ruled out: "
+                        f"{type(exc).__name__}: {str(exc)[:256]}"
+                    )
 
-                process.wait(
-                    timeout=2.0
+        try:
+            if process.poll() is None:
+                self.close_diagnostics.append(
+                    "App Server process remained alive after bounded shutdown attempts"
                 )
+        except Exception as exc:
+            self.close_diagnostics.append(
+                f"App Server exit status unavailable: {type(exc).__name__}"
+            )
 
         if self._dispatcher_thread:
             self._dispatcher_thread.join(
@@ -338,14 +386,42 @@ class AppServerClient:
     # Reader / dispatcher
     # =====================================================
 
+    def _set_transport_failure(self, reason: str) -> None:
+        bounded = str(reason)[:512]
+        if self.transport_failure is None:
+            self.transport_failure = bounded
+        error = {"__cx2_transport_error__": self.transport_failure}
+        with self._pending_lock:
+            pending = list(self._pending.values())
+        for waiter in pending:
+            try:
+                waiter.put_nowait(error)
+            except queue.Full:
+                pass
+
+    def _put_transport_event(
+        self,
+        target: queue.Queue[dict[str, Any]],
+        message: dict[str, Any],
+        category: str,
+    ) -> bool:
+        try:
+            target.put_nowait(message)
+            return True
+        except queue.Full:
+            self._set_transport_failure(f"App Server {category} capacity exceeded")
+            return False
+
     def _stderr_loop(self) -> None:
 
         assert self.process is not None
         assert self.process.stderr is not None
 
         for line in self.process.stderr:
+            if len(self.stderr_lines) >= MAX_STDERR_LINES:
+                self.stderr_lines_dropped += 1
             self.stderr_lines.append(
-                line
+                line[:MAX_STDERR_LINE_CHARS]
             )
 
     def _dispatch_loop(self) -> None:
@@ -369,11 +445,13 @@ class AppServerClient:
                     )
 
                 except json.JSONDecodeError:
-                    self.unknown_messages.put(
+                    self._put_transport_event(
+                        self.unknown_messages,
                         {
                             "type": "invalid-json",
-                            "raw": line,
-                        }
+                            "raw": line[:MAX_STDERR_LINE_CHARS],
+                        },
+                        "unknown-message queue",
                     )
 
                     continue
@@ -382,11 +460,13 @@ class AppServerClient:
                     message,
                     dict,
                 ):
-                    self.unknown_messages.put(
+                    self._put_transport_event(
+                        self.unknown_messages,
                         {
                             "type": "non-object",
                             "value": message,
-                        }
+                        },
+                        "unknown-message queue",
                     )
 
                     continue
@@ -419,6 +499,8 @@ class AppServerClient:
         message: dict[str, Any],
     ) -> None:
 
+        message.setdefault("_cx2_received_monotonic", time.monotonic())
+
         has_id = (
             "id" in message
         )
@@ -435,8 +517,8 @@ class AppServerClient:
         # ---------------------------------------------
 
         if has_id and has_method:
-            self.server_requests.put(
-                message
+            self._put_transport_event(
+                self.server_requests, message, "server-request queue"
             )
             return
 
@@ -445,8 +527,8 @@ class AppServerClient:
         # ---------------------------------------------
 
         if has_method:
-            self.notifications.put(
-                message
+            self._put_transport_event(
+                self.notifications, message, "notification queue"
             )
             return
 
@@ -467,17 +549,20 @@ class AppServerClient:
                 )
 
             if waiter is not None:
-                waiter.put(
-                    message
-                )
+                try:
+                    waiter.put_nowait(message)
+                except queue.Full:
+                    self._set_transport_failure(
+                        "Duplicate response exceeded pending request capacity"
+                    )
                 return
 
         # ---------------------------------------------
         # Unknown
         # ---------------------------------------------
 
-        self.unknown_messages.put(
-            message
+        self._put_transport_event(
+            self.unknown_messages, message, "unknown-message queue"
         )
 
     # =====================================================
@@ -547,6 +632,10 @@ class AppServerClient:
         )
 
         with self._pending_lock:
+            if len(self._pending) >= MAX_PENDING_REQUESTS:
+                raise AppServerProtocolError(
+                    "App Server pending request capacity exceeded"
+                )
             self._pending[
                 request_id
             ] = waiter
@@ -565,6 +654,8 @@ class AppServerClient:
             ] = params
 
         try:
+            if self.transport_failure is not None:
+                raise AppServerProtocolError(self.transport_failure)
             self.send(
                 message
             )
@@ -739,6 +830,11 @@ class AppServerClient:
                 if predicate(notification):
                     matched.append(notification)
                 else:
+                    if len(self._notification_backlog) >= MAX_NOTIFICATION_BACKLOG:
+                        self._set_transport_failure(
+                            "App Server notification backlog capacity exceeded"
+                        )
+                        continue
                     self._notification_backlog.append(
                         notification
                     )

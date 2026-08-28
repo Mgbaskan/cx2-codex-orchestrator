@@ -44,7 +44,11 @@ class TestTerminalUI(unittest.TestCase):
             quota={"available": True, "remainingPercent": 27.0, "state": "CONSERVE"}
         )
         out = stream.getvalue()
-        self.assertIn("[cx] RESUME · gpt-5.6-luna · low · read-only · 27% kaldı · CONSERVE", out)
+        self.assertIn(
+            "[cx] RESUME · gpt-5.6-luna · low · read-only · "
+            "27% kaldı · age unknown · CONSERVE",
+            out,
+        )
 
     def test_consecutive_turns_reset_diff_state(self):
         stream = io.StringIO()

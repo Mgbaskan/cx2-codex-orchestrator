@@ -31,7 +31,11 @@ def hash_dir(path: Path) -> dict[str, str]:
 class TestExecutionEnvironment(unittest.TestCase):
 
     def setUp(self):
-        self.temp_dir = Path(tempfile.mkdtemp(prefix="cx2-test-fixture-"))
+        self.temp_dir = Path(
+            tempfile.mkdtemp(
+                prefix="cx2-test-fixture-", dir=_bootstrap.TEST_TEMP_ROOT
+            )
+        )
         self.workspace = self.temp_dir / "workspace"
         self.workspace.mkdir(parents=True)
         (self.workspace / "sample.py").write_text("def add(a, b):\n    return a + b\n", encoding="utf-8")

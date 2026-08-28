@@ -226,6 +226,7 @@ def capture_multiline_paste(
     print_func("[cx] İptal etmek için tek satırda .cancel")
 
     lines: list[str] = []
+    retained_bytes = 0
     try:
         while True:
             try:
@@ -247,7 +248,21 @@ def capture_multiline_paste(
             elif trimmed == "..cancel":
                 line = line.replace("..cancel", ".cancel", 1)
 
+            try:
+                line_bytes = len(line.encode("utf-8"))
+            except UnicodeEncodeError as exc:
+                print_func(f"[cx] Prompt hatası: geçersiz Unicode ({exc}).")
+                return None
+            projected_bytes = retained_bytes + (1 if lines else 0) + line_bytes
+            if projected_bytes > MAX_PROMPT_BYTES:
+                print_func(
+                    "[cx] Prompt hatası: çok satırlı giriş 1 MiB sınırı aşıyor; "
+                    "giriş durduruldu."
+                )
+                return None
+
             lines.append(line)
+            retained_bytes = projected_bytes
 
     except Exception:
         print_func("\n[cx] Çok satırlı giriş iptal edildi.")

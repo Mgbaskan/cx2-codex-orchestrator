@@ -10,6 +10,7 @@ import uuid
 from typing import Any
 
 from cx_home import resolve_cx_home
+from release_version import CX2_VERSION
 
 CX_HOME = resolve_cx_home()
 CX2_HOME = CX_HOME / "runtime" / "cx2"
@@ -82,7 +83,7 @@ from required_verification import (
 
 
 EXPECTED_ROUTER_VERSION = "1.2.2"
-RUNTIME_VERSION = "2.0.13"
+RUNTIME_VERSION = CX2_VERSION
 
 DEFAULT_TURN_IDLE_TIMEOUTS: dict[str, float] = {
     "routine": 300.0,
@@ -833,6 +834,10 @@ class CX2Runtime:
                 "classification_dropped_bytes": classification_dropped,
                 "exit_code": raw.get("exit_code"),
                 "duration_ms": raw.get("duration_ms"),
+                "protocol_elapsed_ms": raw.get("protocol_elapsed_ms"),
+                "notification_queue_ms": raw.get("notification_queue_ms"),
+                "classification_projection_ms": raw.get("classification_projection_ms"),
+                "render_ms": raw.get("render_ms"),
                 "sequence": raw.get("sequence"),
                 "output_snippet": output,
                 "output_total_bytes": output_total,
@@ -1381,7 +1386,7 @@ class CX2Runtime:
         # -------------------------------------------------------------
         verification_assessment = None
         user_skip = is_explicit_verification_skip(prompt)
-        quota_state = str(quota.get("budget_state", "normal"))
+        quota_state = str(quota.get("state", "normal"))
         required_plan = extract_required_verification_plan(prompt)
 
         if final_raw is not None:

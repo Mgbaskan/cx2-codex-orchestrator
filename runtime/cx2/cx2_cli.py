@@ -1,5 +1,29 @@
 from __future__ import annotations
 
+import sys as _fast_sys
+
+from cli_parser import build_parser
+from release_version import CX2_VERSION
+
+
+if __name__ == "__main__" and _fast_sys.argv[1:] == ["--version"]:
+    print(f"CX2 CLI {CX2_VERSION}")
+    print(f"CX2 runtime {CX2_VERSION}")
+    print("Router 1.2.2")
+    raise SystemExit(0)
+
+if __name__ == "__main__" and _fast_sys.argv[1:] in (["--help"], ["-h"]):
+    build_parser().print_help()
+    raise SystemExit(0)
+
+if __name__ == "__main__" and _fast_sys.argv[1:] == ["--doctor-offline"]:
+    from pathlib import Path as _FastPath
+    from installer_health import offline_install_health
+
+    _healthy, _detail = offline_install_health(_FastPath(__file__).resolve().parents[2])
+    print(f"CX2 structural doctor: {'OK' if _healthy else 'FAILED'} · {_detail}")
+    raise SystemExit(0 if _healthy else 1)
+
 # CX2_HISTORY_CLI_BINDING_V1
 from history_cli import handle_history_command
 
@@ -89,7 +113,7 @@ from session_adapter import (
 )
 
 
-CLI_VERSION = "2.0.13"
+CLI_VERSION = CX2_VERSION
 
 
 class CX2CLIError(
@@ -109,137 +133,6 @@ def check_contract() -> None:
             f"{production_cx.ROUTER_VERSION!r} != "
             f"{EXPECTED_ROUTER_VERSION!r}"
         )
-
-
-def build_parser() -> argparse.ArgumentParser:
-
-    parser = argparse.ArgumentParser(
-        prog="cx",
-        description=(
-            "CX 2.0 direct Codex App Server runtime"
-        ),
-    )
-
-    parser.add_argument(
-        "prompt",
-        nargs="*",
-        help="Codex görevi",
-    )
-
-    parser.add_argument(
-        "--prompt-file",
-        metavar="PATH",
-        help="UTF-8 dosya içeriğini birincil prompt olarak kullanır",
-    )
-
-    parser.add_argument(
-        "--stdin",
-        action="store_true",
-        help="UTF-8 promptu stdin üzerinden okur",
-    )
-
-    parser.add_argument(
-        "--doctor",
-        action="store_true",
-        help="CX runtime sağlık kontrolü",
-    )
-
-    parser.add_argument(
-        "--route",
-        metavar="TEXT",
-        help=(
-            "Sadece lokal routing sonucunu göster; "
-            "model turn'ü başlatmaz"
-        ),
-    )
-
-    parser.add_argument(
-        "--route-file",
-        metavar="PATH",
-        help="Dosyadaki promptun routing sonucunu model turn olmadan gösterir",
-    )
-
-    parser.add_argument(
-        "--stats",
-        action="store_true",
-        help="Yerel token telemetri özetini göster",
-    )
-
-    parser.add_argument(
-        "--quota",
-        action="store_true",
-        help=(
-            "Codex kota anlık görüntüsünü yenileyip göster; "
-            "model turnü başlatmaz"
-        ),
-    )
-
-    parser.add_argument(
-        "--session",
-        action="store_true",
-        help="Aktif repo session bilgisini göster",
-    )
-
-    parser.add_argument(
-        "--new",
-        action="store_true",
-        help="Persisted repo session bağlantısını sıfırla",
-    )
-
-    parser.add_argument(
-        "--version",
-        action="store_true",
-        help="CX2 runtime sürümünü göster",
-    )
-
-    parser.add_argument(
-        "--attach",
-        action=CX2InputAction,
-        input_kind="attach",
-        default=[],
-        metavar="PATH",
-        help=(
-            "Yerel dosya ekle; resimler native localImage, "
-            "diğer dosyalar path mention olarak gönderilir"
-        ),
-    )
-
-    parser.add_argument(
-        "--image",
-        action=CX2InputAction,
-        input_kind="image",
-        default=[],
-        metavar="PATH",
-        help="Yerel resmi native image input olarak ekle",
-    )
-
-    parser.add_argument(
-        "--image-url",
-        action=CX2InputAction,
-        input_kind="image_url",
-        default=[],
-        metavar="URL",
-        help="Uzak resmi URL image input olarak ekle",
-    )
-
-    parser.add_argument(
-        "--file",
-        action=CX2InputAction,
-        input_kind="file",
-        default=[],
-        metavar="PATH",
-        help="Yerel dosya/PDF/binary path mention ekle",
-    )
-
-    # Internal canary/test hook.
-    # Normal cx usage never needs this.
-    parser.add_argument(
-        "--usage-db",
-        metavar="PATH",
-        help=argparse.SUPPRESS,
-    )
-
-    return parser
 
 
 def open_usage_db(
@@ -740,7 +633,11 @@ def handle_interactive_command(
             body += "\n[cx] Uyarı: transcript 16 MiB sınırında kesildi."
         rendered = header + "\n\n" + body
         if folded != "/last":
-            page_text(rendered)
+            presentation = _CX2_TERMINAL.suspend_presentation("pager")
+            try:
+                page_text(rendered)
+            finally:
+                _CX2_TERMINAL.restore_presentation(presentation)
         else:
             print(rendered)
         return True, False
@@ -787,6 +684,16 @@ def handle_interactive_command(
                     f"   classification={entry.get('classification', '')} · "
                     f"host_execution={bool(entry.get('host_execution'))}"
                 )
+                timing_parts = [
+                    f"{name}={float(entry[name]):.1f}ms"
+                    for name in (
+                        "protocol_elapsed_ms", "notification_queue_ms",
+                        "classification_projection_ms", "render_ms",
+                    )
+                    if isinstance(entry.get(name), (int, float))
+                ]
+                if timing_parts:
+                    print("   cx_timing " + " · ".join(timing_parts))
                 if entry.get("output_snippet"):
                     print(f"   output={entry['output_snippet']}")
                 for field in ("command", "cwd", "status", "classification"):

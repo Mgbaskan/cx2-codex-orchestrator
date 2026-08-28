@@ -51,7 +51,18 @@ During broad read-only inspections, CX2 evaluates verification completeness acro
 ```
 *Note*: `inconclusive_count` is included in `total_checks` to ensure transparent accounting without producing false failure or passed claims.
 
-## CX2 2.0.13 terminal contract
+## CX2 2.0.14 terminal contract
+
+TTY capability is split by feature: `NO_COLOR` disables colour but does not
+disable cursor control or the sticky status row. `TERM=dumb`, redirected
+streams, or `CX2_STATIC_UI=1` select static presentation. Sticky status,
+spinner, commands, approvals, responses and the pager use explicit current-row
+ownership; leaving the pager or an approval restores the prior eligible status.
+
+All model/command text crosses a presentation-only control sanitizer. Newline
+and tab retain their structural meaning; CR, ESC, BEL, C0/C1 controls, CSI and
+OSC sequences are shown as inert ASCII escapes. CX-generated ANSI remains
+trusted and canonical transcript text remains unchanged.
 
 Visible canonical assistant responses are retained separately at
 `CX_HOME/data/visible-transcript.sqlite3`. The runtime stores UTF-8 chunks as
@@ -60,6 +71,10 @@ completed responses and 64 MiB of logical retained payload, and prunes records
 older than 30 days. The database is local plaintext. Raw reasoning, commentary
 items and App Server payloads are never copied into it. A failed transcript
 database produces a bounded warning and does not fail the turn.
+The 16 MiB boundary applies only to durable retention. Live response rendering
+continues beyond it; the retained row is marked truncated while final-answer
+identity and exact equality remain deterministic through bounded UTF-8
+length/digest accounting.
 
 `/last` shows the latest response for the current safe thread/workspace
 context, including `partial`, `failed`, `interrupted` or `truncated` state.
@@ -85,7 +100,7 @@ completed turn, and is cleared on `/new`, App Server/runtime replacement or CLI
 exit. Oversized projected fields carry explicit retained/dropped-byte notices;
 trace does not survive restart.
 Quota is a pre-turn snapshot (or explicit `/quota` refresh), not a live feed;
-the status line reports its captured age and shows `? · unavailable` when no
+the static header and sticky line report captured age (or `age unknown`) and show `? · unavailable` when no
 value exists. Matching token-usage events update context. Cursor/status UI,
 colour, Unicode glyphs and pager raw mode all have safe fallbacks for
 `NO_COLOR`, `TERM=dumb`, redirected streams, narrow consoles and screen-reader
@@ -94,10 +109,15 @@ spinner, cursor control or interactive approval prompt; required approvals
 decline fail-closed with an explicit diagnostic.
 
 Multiline `/paste` keeps `.send`, `.cancel`, escaped sentinels, UTF-8 and the
-1 MiB limit unchanged, and reports an accepted line/character count without
-logging the pasted content.
+1 MiB limit unchanged. The byte limit is enforced as lines are acquired, and
+the accepted line/character count does not log pasted content. The terminal's
+normal input echo remains active, so `/paste` is not a secret/no-echo editor.
 
 Markdown presentation is intentionally small: headings, bold, inline and fenced
 code, simple lists, blockquotes, links and separators are formatted. Tables,
 nested block parsing and malformed or unfinished delimiters remain literal text.
 Formatting never changes the canonical response saved by the transcript store.
+An unfinished presentation line is bounded to 64 KiB; larger newline-free text
+is emitted in safe literal chunks. Pager wrapping is near-linear and pages are
+produced lazily from compact source spans. Advanced grapheme clusters beyond
+combining-mark/common-wide-character handling may still wrap imperfectly.

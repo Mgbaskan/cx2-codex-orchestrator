@@ -284,7 +284,7 @@ class TestCodexCompat(unittest.TestCase):
 
     def test_native_delete_safety_pre42_compatible(self):
         """M1. Database with agent_jobs table is PRE42_COMPATIBLE."""
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as tmpdir:
             home = Path(tmpdir)
             db_path = home / "state_5.sqlite"
             conn = sqlite3.connect(db_path)
@@ -303,7 +303,7 @@ class TestCodexCompat(unittest.TestCase):
 
     def test_native_delete_safety_post42_incompatible(self):
         """M2. Database without agent_jobs and with migration 42 is POST42_INCOMPATIBLE."""
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as tmpdir:
             home = Path(tmpdir)
             db_path = home / "state_5.sqlite"
             conn = sqlite3.connect(db_path)
@@ -323,7 +323,7 @@ class TestCodexCompat(unittest.TestCase):
 
     def test_history_manager_native_delete_delegation(self):
         """P. history_manager.native_delete_compatibility delegates properly."""
-        with tempfile.TemporaryDirectory() as tmpdir:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as tmpdir:
             home = Path(tmpdir)
             safety = history_manager.native_delete_compatibility(
                 codex_home=home,

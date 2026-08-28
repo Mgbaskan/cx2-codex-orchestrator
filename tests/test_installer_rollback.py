@@ -27,7 +27,7 @@ $ErrorActionPreference = "Stop"
         )
 
     def test_managed_upgrade_preserves_transcript_sentinel_bytes(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as tmp:
             target = Path(tmp) / ".cx"
             transcript = target / "data" / "visible-transcript.sqlite3"
             managed = target / "runtime" / "cx2" / "module.py"
@@ -45,7 +45,7 @@ $ErrorActionPreference = "Stop"
             self.assertEqual(transcript.read_bytes(), sentinel)
 
     def test_managed_rollback_preserves_transcript_sentinel_bytes(self):
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as tmp:
             target = Path(tmp) / ".cx"
             transcript = target / "data" / "visible-transcript.sqlite3"
             managed = target / "runtime" / "cx2" / "module.py"
@@ -66,7 +66,7 @@ $ErrorActionPreference = "Stop"
 
     def test_newly_created_managed_file_removed_on_successful_rollback(self):
         """Newly created managed files (e.g. cx_home.py) must be removed during rollback."""
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as tmp:
             target = Path(tmp) / ".cx"
             cx2_dir = target / "runtime" / "cx2"
             cx2_dir.mkdir(parents=True)
@@ -111,7 +111,7 @@ $ErrorActionPreference = "Stop"
 
     def test_existing_managed_file_restored_on_successful_rollback(self):
         """Existing backed-up files must be restored to their original content."""
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as tmp:
             target = Path(tmp) / ".cx"
             cx2_dir = target / "runtime" / "cx2"
             cx2_dir.mkdir(parents=True)
@@ -156,7 +156,7 @@ $ErrorActionPreference = "Stop"
 
     def test_rollback_continues_attempting_after_single_failure(self):
         """A failure restoring one file must not abort the loop or prevent remaining restores/cleanups."""
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as tmp:
             target = Path(tmp) / ".cx"
             cx2_dir = target / "runtime" / "cx2"
             cx2_dir.mkdir(parents=True)
@@ -290,7 +290,7 @@ $ErrorActionPreference = "Stop"
 
     def test_venv_provenance_case_a_target_absent_venv_absent(self):
         """Case A: Target absent, venv absent -> newly-created venv must be removed on rollback."""
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as tmp:
             target = Path(tmp) / ".cx"
             # Target does not exist initially
             venv_dir = target / "runtime" / "venv"
@@ -329,7 +329,7 @@ $ErrorActionPreference = "Stop"
 
     def test_venv_provenance_case_b_target_exists_venv_absent(self):
         """Case B: Target exists, venv absent -> newly-created venv must be removed on rollback."""
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as tmp:
             target = Path(tmp) / ".cx"
             target.mkdir(parents=True)
             (target / "policy.json").write_text("{}", encoding="utf-8")
@@ -370,7 +370,7 @@ $ErrorActionPreference = "Stop"
 
     def test_venv_provenance_case_c_target_exists_venv_exists_backup_succeeds(self):
         """Case C: Target exists, venv exists, backup succeeds -> old venv restored on rollback."""
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as tmp:
             target = Path(tmp) / ".cx"
             target.mkdir(parents=True)
             venv_dir = target / "runtime" / "venv"
@@ -419,7 +419,7 @@ $ErrorActionPreference = "Stop"
 
     def test_venv_provenance_case_d_target_exists_venv_exists_backup_fails(self):
         """Case D: Target exists, venv exists, backup rename fails -> original venv must remain untouched."""
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT) as tmp:
             target = Path(tmp) / ".cx"
             target.mkdir(parents=True)
             venv_dir = target / "runtime" / "venv"

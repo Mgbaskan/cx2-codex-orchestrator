@@ -629,12 +629,15 @@ The installer will:
 5. Compile the native Windows launcher.
 6. Install `cx.exe` under `~/.cx/bin`.
 7. Add `~/.cx/bin` to the user's `PATH` if required.
-8. Run `cx --doctor`.
+8. Verify managed files offline, then run online `cx --doctor` diagnostics separately.
 
 If an existing CX installation is detected, the installer updates CX-managed
 source/runtime files while preserving user-managed state such as the existing
 policy configuration and local runtime data. Back up custom modifications
-before upgrading.
+before upgrading. A local hashed managed-file manifest identifies installer
+provenance and obsolete managed Python modules; cleanup residue and online
+doctor unavailability are reported without being disguised as structural
+installation corruption.
 
 ---
 
@@ -862,7 +865,8 @@ No specific optimization or token-saving percentage is guaranteed.
 
 # Known Limitations
 
-CX2 v2.0.13 currently has several known limitations.
+CX2 v2.0.13 is the current immutable release. The `dev/2.0.14` candidate retains
+the limitations below unless explicitly hardened in its changelog.
 
 ### Windows-first
 
@@ -935,6 +939,8 @@ Status:
 ```text
 STABLE / FROZEN
 ```
+
+Current development candidate: `CX2 2.0.14` (unreleased; not production).
 
 The public release includes:
 

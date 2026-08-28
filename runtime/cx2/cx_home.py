@@ -76,6 +76,17 @@ def resolve_cx_home(
        and module is in <root>/runtime/cx2.
     2. Default fallback: Path.home() / ".cx".
     """
+    disposable_canary_home = os.environ.get("CX2_DISPOSABLE_CANARY_HOME")
+    if disposable_canary_home:
+        if os.environ.get("CX2_CANARY_MODE") != "1":
+            raise RuntimeError(
+                "CX2_DISPOSABLE_CANARY_HOME requires explicit CX2_CANARY_MODE=1"
+            )
+        candidate = Path(disposable_canary_home)
+        if not candidate.is_absolute():
+            raise RuntimeError("Disposable canary CX_HOME must be absolute")
+        return candidate.resolve()
+
     try:
         mod_path = Path(module_file if module_file else __file__).resolve()
         cx2_dir = mod_path.parent

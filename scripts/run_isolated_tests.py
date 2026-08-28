@@ -11,9 +11,13 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def resolve_isolated_temp_parent() -> Path:
-    return (
-        Path(os.environ.get("LOCALAPPDATA", tempfile.gettempdir())) / "Temp"
-    ).resolve()
+    explicit_root = os.environ.get("CX2_TEST_TEMP_ROOT")
+    if explicit_root:
+        return Path(os.path.abspath(explicit_root))
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if local_app_data:
+        return (Path(local_app_data) / "Temp").resolve()
+    return Path(tempfile.gettempdir()).resolve()
 
 
 def main() -> int:
@@ -41,6 +45,7 @@ def main() -> int:
             path.mkdir(parents=True, exist_ok=True)
         for name, path in paths.items():
             env[name] = str(path)
+        env["CX2_TEST_TEMP_ROOT"] = str(temp_root)
 
         completed = subprocess.run(
             [sys.executable, "-m", "unittest", "discover", "tests"],

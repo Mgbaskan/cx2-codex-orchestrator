@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 from pathlib import Path
+import queue
 import sqlite3
 import threading
 import uuid
@@ -16,6 +17,8 @@ MAX_RESPONSE_BYTES = 16 * 1024 * 1024
 MAX_COMPLETED_RESPONSES = 200
 MAX_LOGICAL_BYTES = 64 * 1024 * 1024
 MAX_AGE_DAYS = 30
+MAX_PENDING_FLUSHES = 1
+TRANSCRIPT_FLUSH_WAIT_SECONDS = 5.0
 
 TERMINAL_STATES = {
     "COMPLETED",
@@ -64,16 +67,36 @@ def _utc_now() -> str:
 
 
 def _bounded_utf8_prefix(value: str, limit: int) -> tuple[str, int]:
-    encoded = value.encode("utf-8")
-    if len(encoded) <= limit:
-        return value, len(encoded)
-    bounded = encoded[:limit]
-    while bounded:
-        try:
-            return bounded.decode("utf-8"), len(bounded)
-        except UnicodeDecodeError as exc:
-            bounded = bounded[: exc.start]
-    return "", 0
+    if limit <= 0 or not value:
+        return "", 0
+    parts: list[str] = []
+    total = 0
+    chunk_chars = 64 * 1024
+    for offset in range(0, len(value), chunk_chars):
+        chunk = value[offset : offset + chunk_chars]
+        encoded = chunk.encode("utf-8")
+        if total + len(encoded) <= limit:
+            parts.append(chunk)
+            total += len(encoded)
+            continue
+        bounded = encoded[: max(0, limit - total)]
+        while bounded:
+            try:
+                parts.append(bounded.decode("utf-8"))
+                total += len(bounded)
+                break
+            except UnicodeDecodeError as exc:
+                bounded = bounded[: exc.start]
+        return "".join(parts), total
+    return value, total
+
+
+def _utf8_length(value: str) -> int:
+    total = 0
+    chunk_chars = 64 * 1024
+    for offset in range(0, len(value), chunk_chars):
+        total += len(value[offset : offset + chunk_chars].encode("utf-8"))
+    return total
 
 
 class TranscriptStore:
@@ -286,7 +309,7 @@ class TranscriptStore:
         retained_text, retained_bytes = _bounded_utf8_prefix(
             canonical_text, MAX_RESPONSE_BYTES
         )
-        total_bytes = len(canonical_text.encode("utf-8"))
+        total_bytes = _utf8_length(canonical_text)
         if total_bytes > retained_bytes and normalized_state == "COMPLETED":
             normalized_state = "TRUNCATED"
         chunks: list[tuple[str, int]] = []
@@ -457,6 +480,82 @@ class TranscriptResponseSink:
         self._observed_bytes = 0
         self._closed = False
         self.truncated = False
+        self._writer_error: BaseException | None = None
+        self._flush_queue: queue.Queue[
+            tuple[str | None, int, threading.Event]
+        ] = queue.Queue(maxsize=MAX_PENDING_FLUSHES)
+        self._writer = threading.Thread(
+            target=self._writer_loop,
+            name="cx2-transcript-writer",
+            daemon=True,
+        )
+        self._writer.start()
+
+    def _writer_loop(self) -> None:
+        while True:
+            text, observed, acknowledged = self._flush_queue.get()
+            try:
+                if text is None:
+                    return
+                if self._writer_error is None:
+                    self.store._append_chunk(
+                        self.response_id,
+                        text,
+                        observed_bytes=observed,
+                    )
+            except BaseException as exc:
+                self._writer_error = exc
+            finally:
+                acknowledged.set()
+                self._flush_queue.task_done()
+
+    def _raise_writer_error(self) -> None:
+        if self._writer_error is not None:
+            raise TranscriptStoreError(
+                "asynchronous transcript flush failed: "
+                f"{type(self._writer_error).__name__}: {self._writer_error}"
+            ) from self._writer_error
+
+    def _enqueue(self, value: str, observed: int, *, wait: bool) -> None:
+        self._raise_writer_error()
+        acknowledged = threading.Event()
+        try:
+            self._flush_queue.put(
+                (value, observed, acknowledged),
+                timeout=TRANSCRIPT_FLUSH_WAIT_SECONDS,
+            )
+        except queue.Full as exc:
+            raise TranscriptStoreError(
+                "bounded transcript writer queue did not make progress"
+            ) from exc
+        if wait and not acknowledged.wait(TRANSCRIPT_FLUSH_WAIT_SECONDS):
+            raise TranscriptStoreError("transcript flush acknowledgement timed out")
+        if wait:
+            self._raise_writer_error()
+
+    def _flush_buffer(self, *, wait: bool) -> None:
+        if self._closed:
+            return
+        if self._buffer:
+            value = self._buffer
+            observed = self._buffer_bytes
+            self._buffer = ""
+            self._buffer_bytes = 0
+            self._enqueue(value, observed, wait=wait)
+        elif wait:
+            marker = threading.Event()
+            try:
+                self._flush_queue.put(
+                    ("", 0, marker),
+                    timeout=TRANSCRIPT_FLUSH_WAIT_SECONDS,
+                )
+            except queue.Full as exc:
+                raise TranscriptStoreError(
+                    "bounded transcript writer queue did not drain"
+                ) from exc
+            if not marker.wait(TRANSCRIPT_FLUSH_WAIT_SECONDS):
+                raise TranscriptStoreError("transcript drain acknowledgement timed out")
+            self._raise_writer_error()
 
     def append(self, value: str) -> None:
         if self._closed or not value:
@@ -473,16 +572,29 @@ class TranscriptResponseSink:
             self._observed_bytes += piece_bytes
             remaining = remaining[len(piece) :]
             if self._buffer_bytes >= FLUSH_BYTES:
-                self.flush()
+                self._flush_buffer(wait=False)
 
     def flush(self) -> None:
-        if self._closed or not self._buffer:
+        self._flush_buffer(wait=True)
+
+    def _stop_writer(self) -> None:
+        if not self._writer.is_alive():
+            self._raise_writer_error()
             return
-        value = self._buffer
-        observed = self._buffer_bytes
-        self._buffer = ""
-        self._buffer_bytes = 0
-        self.store._append_chunk(self.response_id, value, observed_bytes=observed)
+        acknowledged = threading.Event()
+        try:
+            self._flush_queue.put(
+                (None, 0, acknowledged),
+                timeout=TRANSCRIPT_FLUSH_WAIT_SECONDS,
+            )
+        except queue.Full as exc:
+            raise TranscriptStoreError("transcript writer stop queue timed out") from exc
+        if not acknowledged.wait(TRANSCRIPT_FLUSH_WAIT_SECONDS):
+            raise TranscriptStoreError("transcript writer stop acknowledgement timed out")
+        self._writer.join(timeout=TRANSCRIPT_FLUSH_WAIT_SECONDS)
+        if self._writer.is_alive():
+            raise TranscriptStoreError("transcript writer did not stop")
+        self._raise_writer_error()
 
     def finalize(
         self,
@@ -496,8 +608,10 @@ class TranscriptResponseSink:
     ) -> None:
         if self._closed:
             return
+        self._flush_buffer(wait=True)
+        self._stop_writer()
         # Canonical finalization transactionally replaces all provisional chunks.
-        self.truncated = len(canonical_text.encode("utf-8")) > MAX_RESPONSE_BYTES
+        self.truncated = _utf8_length(canonical_text) > MAX_RESPONSE_BYTES
         self.store._finalize(
             self.response_id,
             canonical_text=canonical_text,
@@ -511,6 +625,19 @@ class TranscriptResponseSink:
         self._buffer = ""
         self._buffer_bytes = 0
 
+    def abort(self) -> None:
+        """Boundedly stop a failed sink without altering the turn outcome."""
+
+        if self._closed:
+            return
+        self._closed = True
+        self._buffer = ""
+        self._buffer_bytes = 0
+        try:
+            self._stop_writer()
+        except Exception:
+            pass
+
 
 __all__ = [
     "FLUSH_BYTES",
@@ -518,6 +645,7 @@ __all__ = [
     "MAX_COMPLETED_RESPONSES",
     "MAX_LOGICAL_BYTES",
     "MAX_AGE_DAYS",
+    "MAX_PENDING_FLUSHES",
     "StoredResponse",
     "TranscriptResponseSink",
     "TranscriptStore",

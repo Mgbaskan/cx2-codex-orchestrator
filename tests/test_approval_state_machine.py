@@ -519,11 +519,18 @@ class TestApprovalStateMachine(unittest.TestCase):
     def test_patch_and_file_change_approvals(self) -> None:
         """File change approvals (modern & legacy) work with replay and prompt counting."""
         result = TurnRunResult(thread_id="th-1", turn_id="tu-1")
+        self.runner.current_cwd = REPO_ROOT
+        self.runner._active_thread_id = "th-1"
 
         req_modern = {
             "id": "req-f1",
             "method": "item/fileChange/requestApproval",
-            "params": {"reason": "edit code", "grantRoot": "/workspace"},
+            "params": {
+                "reason": "edit code",
+                "grantRoot": str(REPO_ROOT),
+                "fileChanges": [{"path": "notes.txt", "action": "edit"}],
+                "availableDecisions": ["accept", "decline"],
+            },
         }
         with patch("turn_runner._CX2_TERMINAL.approval_prompt", return_value="accept") as mock_prompt:
             with patch.object(TerminalRenderer, "can_prompt", new=property(lambda self: True)):

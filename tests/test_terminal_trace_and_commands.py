@@ -31,7 +31,7 @@ class TTY(io.StringIO):
 
 class TestTraceAndTranscriptCommands(unittest.TestCase):
     def setUp(self) -> None:
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = tempfile.TemporaryDirectory(dir=_bootstrap.TEST_TEMP_ROOT)
         self.root = Path(self.temp.name)
         self.db = sqlite3.connect(":memory:")
 

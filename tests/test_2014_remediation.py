@@ -26,6 +26,7 @@ from file_write_grants import (  # noqa: E402
     ordinary_workspace_file_mutation,
 )
 from prompt_transport import MAX_PROMPT_BYTES, capture_multiline_paste  # noqa: E402
+from release_version import CX2_VERSION  # noqa: E402
 from terminal_markdown import TerminalMarkdownStream  # noqa: E402
 from terminal_pager import TerminalPager, pager_capable, wrap_display  # noqa: E402
 from terminal_ui import TerminalRenderer  # noqa: E402
@@ -743,7 +744,7 @@ class TestBoundsAndPerformance2014(unittest.TestCase):
             self.assertEqual(completed.returncode, 0)
             self.assertEqual(
                 completed.stdout.splitlines(),
-                ["CX2 CLI 2.0.14", "CX2 runtime 2.0.14", "Router 1.2.2"],
+                [f"CX2 CLI {CX2_VERSION}", f"CX2 runtime {CX2_VERSION}", "Router 1.2.2"],
             )
         self.assertLess(statistics.median(timings), 900)
 

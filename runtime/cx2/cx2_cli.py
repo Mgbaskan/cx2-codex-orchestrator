@@ -1051,8 +1051,8 @@ def interactive_loop(
         while True:
 
             try:
-                raw_input_text = input(
-                    "cx> "
+                raw_input_text = _CX2_TERMINAL.prompt_input(
+                    "CX> "
                 ).strip()
                 prompt = normalize_external_text(
                     raw_input_text

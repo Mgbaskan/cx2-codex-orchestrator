@@ -14,6 +14,7 @@ from verification_gate import (
     is_ripgrep_command,
     unwrap_display_command,
 )
+from terminal_pager import cell_width
 from terminal_markdown import TerminalMarkdownStream, render_markdown
 from terminal_safety import sanitize_untrusted_text
 
@@ -21,6 +22,34 @@ from terminal_safety import sanitize_untrusted_text
 CX2_TERMINAL_RENDERER_V1 = True
 MAX_ACTIVITY_ITEMS = 256
 MAX_VISIBLE_DIFF_BYTES = 256 * 1024
+
+
+def _truncate_to_cell_width(text: str, max_cells: int) -> str:
+    if max_cells <= 0:
+        return ""
+    total = cell_width(text)
+    if total <= max_cells:
+        return text
+    if max_cells <= 3:
+        current = 0
+        retained = []
+        for char in text:
+            w = cell_width(char)
+            if current + w > max_cells:
+                break
+            retained.append(char)
+            current += w
+        return "".join(retained)
+    target = max_cells - 3
+    current = 0
+    retained = []
+    for char in text:
+        w = cell_width(char)
+        if current + w > target:
+            break
+        retained.append(char)
+        current += w
+    return "".join(retained) + "..."
 
 
 def _quota_freshness(quota: dict[str, Any]) -> str:
@@ -98,6 +127,8 @@ class TerminalRenderer:
         self._status_text: str = ""
         self._status_visible = False
         self._status_desired = False
+        self._status_cursor_active = False
+        self._status_dirty = False
         self._presentation_owner = "content"
         self._status_quota: dict[str, Any] | None = None
         self._status_context: dict[str, Any] | None = None
@@ -107,6 +138,8 @@ class TerminalRenderer:
     def begin_turn(self) -> None:
         """Reset every presentation field whose meaning is scoped to one turn."""
         self.stop_activity()
+        self._status_cursor_active = False
+        self._presentation_owner = "content"
         self._folded_items.clear()
         self._visible_lines.clear()
         self._last_diff = ""
@@ -994,18 +1027,59 @@ class TerminalRenderer:
         self._status_desired = bool(self._status_text)
         if not self._status_text or not self.capabilities.sticky_status:
             return
-        self._write("\r\x1b[2K" + self._dim("[cx] " + self._status_text), flush=True)
+        if self._presentation_owner == "prompt":
+            self._status_dirty = True
+            return
+        avail = max(1, int(self.terminal_width()) - 1)
+        plain_text = "[cx] " + self._status_text
+        bounded_text = _truncate_to_cell_width(plain_text, avail)
+        self._write("\r\x1b[2K" + self._dim(bounded_text), flush=True)
         self._status_visible = True
+        self._status_cursor_active = True
+        self._status_dirty = False
         self._presentation_owner = "status"
 
     def suspend_status(self) -> None:
-        if self._status_visible and self.capabilities.cursor:
+        if self._status_visible and self._status_cursor_active and self.capabilities.cursor:
             self._write("\r\x1b[2K", flush=True)
+            self._status_cursor_active = False
             self._status_visible = False
 
     def resume_status(self) -> None:
         if self._status_desired:
             self.render_status_line()
+
+    def prompt_input(
+        self,
+        prompt: str = "CX> ",
+        *,
+        input_func: Any | None = None,
+    ) -> str:
+        if input_func is None:
+            input_func = input
+
+        if not self.capabilities.sticky_status:
+            self._presentation_owner = "prompt"
+            try:
+                return input_func(prompt)
+            finally:
+                self._presentation_owner = "content"
+                self._status_cursor_active = False
+
+        if self._status_desired or self._status_dirty or not self._status_visible:
+            if self._status_text:
+                self.render_status_line()
+
+        if self._status_visible and self._status_cursor_active:
+            self._write("\r\n\r\n\r", flush=True)
+            self._status_cursor_active = False
+
+        self._presentation_owner = "prompt"
+        try:
+            return input_func(prompt)
+        finally:
+            self._presentation_owner = "content"
+            self._status_cursor_active = False
 
     def suspend_presentation(self, owner: str) -> tuple[str, bool]:
         """Transfer current-row ownership to a modal presenter."""

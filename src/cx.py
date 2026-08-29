@@ -4385,7 +4385,7 @@ def main() -> int:
         while True:
             try:
                 prompt = input(
-                    "cx> "
+                    "CX> "
                 ).strip()
 
             except (

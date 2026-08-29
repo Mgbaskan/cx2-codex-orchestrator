@@ -51,7 +51,15 @@ During broad read-only inspections, CX2 evaluates verification completeness acro
 ```
 *Note*: `inconclusive_count` is included in `total_checks` to ensure transparent accounting without producing false failure or passed claims.
 
-## CX2 2.0.14 terminal contract
+## CX2 2.0.15 terminal contract
+
+The interactive prompt maintains deterministic visual separation:
+```text
+[cx] <status>
+
+CX>
+```
+Exactly one blank visual row separates the sticky status line from the input prompt, with the prompt starting at column 0. While blocking input owns the terminal, asynchronous status redraws are deferred to protect live typed user input from corruption. Once advanced into prompt mode, status parked in scrollback is not treated as cursor-addressable. Narrow terminal status text is cell-width bounded to prevent line-wrapping.
 
 TTY capability is split by feature: `NO_COLOR` disables colour but does not
 disable cursor control or the sticky status row. `TERM=dumb`, redirected

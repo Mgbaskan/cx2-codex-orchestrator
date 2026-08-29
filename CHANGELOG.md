@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.15] - 2026-08-29
+
+### Terminal UX and Reliability
+- Added deterministic visual separation between the sticky status line and the interactive `CX> ` prompt, ensuring exactly one blank visual row between status and prompt with the prompt starting at column 0.
+- Implemented status redraw deferral while blocking interactive prompt input owns the terminal, guaranteeing partially typed user input cannot be clobbered or corrupted by asynchronous status refreshes.
+- Explicitly separated cursor-colocated status semantics from parked scrollback status, preventing `suspend_status()` or subsequent turn starts from erasing active prompt lines.
+- Bounded narrow/tiny terminal status text strictly by visible cell width before applying ANSI formatting, preventing line-wrapping into the prompt surface on narrow displays while preserving valid ANSI reset behavior.
+- Preserved deterministic plain output behavior without ANSI sequences or decorative lines for non-TTY environments.
+
 ## [2.0.14] - 2026-08-28
 
 ### Security

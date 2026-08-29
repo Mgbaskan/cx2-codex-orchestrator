@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://www.microsoft.com/windows)
 [![Python](https://img.shields.io/badge/python-3.12-blue.svg)](https://www.python.org/)
-[![Release](https://img.shields.io/badge/release-v2.0.14-green.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/releases/tag/v2.0.14)
+[![Release](https://img.shields.io/badge/release-v2.0.15-green.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/releases/tag/v2.0.15)
 [![Tests](https://github.com/Mgbaskan/cx2-codex-orchestrator/actions/workflows/test.yml/badge.svg)](https://github.com/Mgbaskan/cx2-codex-orchestrator/actions/workflows/test.yml)
 
 **CX2** is a Windows-first, policy-driven orchestration and terminal UX layer for OpenAI Codex.
@@ -866,7 +866,7 @@ No specific optimization or token-saving percentage is guaranteed.
 
 # Known Limitations
 
-CX2 v2.0.14 is the current release. The limitations below remain in effect
+CX2 v2.0.15 is the current release. The limitations below remain in effect
 unless explicitly narrowed in the changelog.
 
 ### Windows-first
@@ -932,7 +932,7 @@ Broad audits on massive codebases with hundreds of files may require custom turn
 Current stable release:
 
 ```text
-CX2 2.0.14
+CX2 2.0.15
 ```
 
 Status:
